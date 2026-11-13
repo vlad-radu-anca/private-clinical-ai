@@ -1,0 +1,38 @@
+# Local dev stack: HAPI FHIR R4 server backed by PostgreSQL.
+# Ports are bound to 127.0.0.1 only, so the server is not reachable from your LAN.
+#   docker compose up -d
+#   curl http://localhost:8080/fhir/metadata
+
+services:
+  db:
+    image: postgres:16.16
+    environment:
+      POSTGRES_DB: hapi
+      POSTGRES_USER: hapi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
+    volumes:
+      - hapi-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hapi -d hapi"]
+      interval: 5s
+      retries: 20
+
+  hapi:
+    # Same tag as the one mirrored to ECR for AWS (HAPI_TAG in scripts/push-images.sh).
+    image: hapiproject/hapi:${HAPI_TAG:-v8.12.0-2}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/hapi
+      SPRING_DATASOURCE_USERNAME: hapi
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
+      SPRING_DATASOURCE_DRIVERCLASSNAME: org.postgresql.Driver
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
+      HAPI_FHIR_FHIR_VERSION: R4
+      JAVA_TOOL_OPTIONS: "-Xmx3g"
+
+volumes:
+  hapi-db:

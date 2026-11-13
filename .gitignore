@@ -1,0 +1,24 @@
+# Synthea
+synthea/output/
+synthea/*.jar
+synthea/*.jar.tmp
+
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+backend.hcl
+crash.log
+
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Loader
+failed_bundles.txt
+
+.DS_Store

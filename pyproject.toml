@@ -1,0 +1,19 @@
+[project]
+name = "private-clinical-ai"
+version = "0.1.0"
+description = "Self-hosted clinical AI on AWS, phase 1: synthetic FHIR data platform"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+
+[tool.pytest.ini_options]
+pythonpath = ["loader"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM"]
+# assert is how pytest checks things; the loader posts to an operator-supplied URL by design
+per-file-ignores = { "tests/**" = ["S101"], "loader/load_fhir.py" = ["S310"] }

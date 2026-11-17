@@ -10,8 +10,9 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import load_fhir
 import pytest
+
+import load_fhir
 
 # Synthea names patient files after the (synthetic) patient.
 PATIENTS = ["Alice_Smith_1111.json", "Bob_Jones_2222.json", "Carol_White_3333.json"]

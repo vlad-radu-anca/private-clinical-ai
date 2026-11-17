@@ -1,7 +1,9 @@
-# Local dev stack: HAPI FHIR R4 server backed by PostgreSQL.
-# Ports are bound to 127.0.0.1 only, so the server is not reachable from your LAN.
-#   docker compose up -d
-#   curl http://localhost:8080/fhir/metadata
+# Local dev stack: HAPI FHIR R4 server, its PostgreSQL, and the phase 2 RAG service
+# with pgvector. The model runs in Ollama on the host, using the Mac's GPU.
+# Ports are bound to 127.0.0.1 only, so nothing is reachable from your LAN.
+#   docker compose -f local/docker-compose.yml up -d
+#   curl http://localhost:8080/fhir/metadata   # FHIR
+#   curl http://localhost:8000/health          # RAG API
 
 services:
   db:
@@ -34,5 +36,40 @@ services:
       HAPI_FHIR_FHIR_VERSION: R4
       JAVA_TOOL_OPTIONS: "-Xmx3g"
 
+  vectordb:
+    # Same major version as HAPI's database and the RDS instance in AWS.
+    image: pgvector/pgvector:0.8.7-pg16
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${RAG_DB_PASSWORD:-change-me-locally}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - rag-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      retries: 20
+
+  rag:
+    build: ../rag
+    depends_on:
+      vectordb:
+        condition: service_healthy
+      hapi:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      FHIR_URL: http://hapi:8080/fhir
+      DATABASE_URL: postgresql://rag:${RAG_DB_PASSWORD:-change-me-locally}@vectordb:5432/rag
+      # Ollama on the host. In AWS this becomes the vLLM service inside the VPC.
+      LLM_BASE_URL: http://host.docker.internal:11434/v1
+      LLM_BACKEND: ollama
+      LLM_MODEL: qwen3:8b
+      EMBED_MODEL: qwen3-embedding:0.6b
+
 volumes:
   hapi-db:
+  rag-db:

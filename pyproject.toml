@@ -6,8 +6,8 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 
 [tool.pytest.ini_options]
-pythonpath = ["loader"]
-testpaths = ["tests"]
+pythonpath = ["loader", "rag"]
+testpaths = ["tests", "rag/tests"]
 
 [tool.ruff]
 line-length = 120
@@ -16,4 +16,7 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "SIM"]
 # assert is how pytest checks things; the loader posts to an operator-supplied URL by design
-per-file-ignores = { "tests/**" = ["S101"], "loader/load_fhir.py" = ["S310"] }
+per-file-ignores = { "tests/**" = ["S101"], "rag/tests/**" = ["S101"], "loader/load_fhir.py" = ["S310"], "rag/clinical_rag/evals.py" = ["S311"] }
+
+[tool.ruff.lint.isort]
+known-first-party = ["clinical_rag", "load_fhir"]

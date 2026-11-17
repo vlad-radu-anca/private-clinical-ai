@@ -1,3 +1,4 @@
-# The loader itself needs only the standard library (boto3 for S3 sources).
-pytest==9.1.1
-ruff==0.16.10
+# Dev tools, plus the RAG service runtime so its tests can import it.
+-r rag/requirements.txt
+pytest==9.2.0
+ruff==0.17.5

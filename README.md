@@ -181,15 +181,9 @@ docker ps                                         # nothing listed means nothing
 
 The same service on EKS, in the phase 1 VPC: no internet gateway, no NAT, every AWS API through a VPC endpoint.
 
-```
-          ┌──────────────── private VPC (eu-central-1), no internet path ─────────────────┐
-kubectl ──▶ EKS 1.36 API (your IP only)                                                  │
-          │   system node, m7i.large, Bottlerocket: RAG API · TEI embeddings (CPU) · jobs   │
-          │   GPU node, g6.xlarge (NVIDIA L4), Bottlerocket NVIDIA: vLLM serving Qwen3-8B    │
-          │   HAPI on Fargate · RDS PostgreSQL with pgvector · models in S3 (KMS)           │
-          └──────────────────────────────────────────────────────────────────────────────────┘
-          CodeBuild import job, outside the VPC: pinned images to ECR, pinned models to S3
-```
+![Phase 2 on AWS: architecture](docs/architecture.svg)
+
+Numbers on the arrows follow the flows: 1 import images and models, 2 load patients, 3 index, 4 ask. The editable source is [docs/architecture.drawio](docs/architecture.drawio) (open it in draw.io or app.diagrams.net, then export it over docs/architecture.svg).
 
 | Decision | Why |
 | --- | --- |

@@ -1,0 +1,55 @@
+# The RAG API and clinician page. Reached with kubectl port-forward: there is no load balancer and no
+# public endpoint. The database password is read from Secrets Manager at startup through Pod Identity.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag
+  labels: { app: rag }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: rag }
+  template:
+    metadata:
+      labels: { app: rag }
+    spec:
+      serviceAccountName: rag
+      nodeSelector:
+        workload: system
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: rag
+          image: rag
+          envFrom:
+            - configMapRef: { name: aws-settings }
+          env:
+            - { name: DATABASE_NAME, value: rag }
+            - { name: LLM_BASE_URL, value: "http://vllm:8000/v1" }
+            - { name: LLM_BACKEND, value: vllm }
+            - { name: LLM_MODEL, value: qwen3-8b }
+            - { name: EMBED_BASE_URL, value: "http://tei/v1" }
+            - { name: EMBED_MODEL, value: qwen3-embedding }
+          ports:
+            - { name: http, containerPort: 8000 }
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag
+spec:
+  selector: { app: rag }
+  ports:
+    - { name: http, port: 8000, targetPort: http }

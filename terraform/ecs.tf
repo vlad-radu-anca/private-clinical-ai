@@ -3,7 +3,8 @@
 
 # ---------- ECR (images are mirrored here; no Docker Hub access from the VPC) ----------
 resource "aws_ecr_repository" "repo" {
-  for_each             = toset(["hapi-fhir", "fhir-loader"])
+  # hapi-fhir, vllm, tei and tei-gpu are mirrored by the import job; fhir-loader and rag are built here.
+  for_each             = toset(["hapi-fhir", "fhir-loader", "vllm", "tei", "tei-gpu", "rag"])
   name                 = "${local.name}/${each.key}"
   image_tag_mutability = "IMMUTABLE"
   force_delete         = true

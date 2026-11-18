@@ -13,14 +13,32 @@ import hashlib
 import json
 
 import psycopg
+import psycopg.conninfo
+import psycopg.sql
 from pgvector.psycopg import register_vector
 
 from clinical_rag.documents import ACTIVE_CONDITION, ACTIVE_MEDICATION, Chunk
 
 
+def ensure_database(database_url: str) -> None:
+    """Create the target database if it does not exist yet. On RDS the instance is created with one
+    database (HAPI's); the RAG index lives in its own, created on first start."""
+    info = psycopg.conninfo.conninfo_to_dict(database_url)
+    name = info.get("dbname")
+    try:
+        psycopg.connect(database_url).close()
+    except psycopg.OperationalError as exc:
+        if f'database "{name}" does not exist' not in str(exc):
+            raise
+        maintenance = psycopg.conninfo.make_conninfo(database_url, dbname="postgres")
+        with psycopg.connect(maintenance, autocommit=True) as conn:
+            conn.execute(psycopg.sql.SQL("CREATE DATABASE {}").format(psycopg.sql.Identifier(name)))
+
+
 class Store:
     def __init__(self, database_url: str, dimensions: int):
         self.dimensions = dimensions
+        ensure_database(database_url)
         self.conn = psycopg.connect(database_url, autocommit=True)
         self.conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         register_vector(self.conn)

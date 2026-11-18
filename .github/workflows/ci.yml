@@ -64,6 +64,23 @@ jobs:
           format: table
           severity: HIGH,CRITICAL
           exit-code: "1"
+          # Accepted findings, each with its reason. Anything else HIGH or CRITICAL fails.
+          trivyignores: .trivyignore.yaml
+
+  kubernetes:
+    name: kubernetes (kustomize, kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The real overlays are generated from Terraform outputs at deploy time; the bases are what CI checks.
+      - name: Render and validate the manifests against Kubernetes 1.36
+        run: |
+          for dir in k8s/base k8s/jobs/index k8s/jobs/eval; do
+            docker run --rm -v "$PWD":/w -w /w registry.k8s.io/kustomize/kustomize:v5.8.1 build "$dir"
+            echo ---
+          done > rendered.yaml
+          docker run --rm -v "$PWD":/w -w /w ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary -kubernetes-version 1.36.0 rendered.yaml
 
   shellcheck:
     name: shellcheck

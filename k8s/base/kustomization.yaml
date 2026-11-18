@@ -1,0 +1,11 @@
+# The application on EKS. make aws-deploy generates an overlay in k8s/build/ that sets the image
+# registry and the AWS settings (database host, secret ARN, model bucket) from Terraform's outputs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: clinical-ai
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - vllm.yaml
+  - tei.yaml
+  - rag.yaml

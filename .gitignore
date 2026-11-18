@@ -22,3 +22,6 @@ __pycache__/
 failed_bundles.txt
 
 .DS_Store
+
+# Generated Kubernetes overlays (account-specific)
+k8s/build/

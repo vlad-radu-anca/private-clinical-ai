@@ -4,3 +4,4 @@ httpx==0.28.1
 psycopg[binary]==3.3.9
 pgvector==0.5.1
 pydantic==2.14.3
+boto3==1.44.4

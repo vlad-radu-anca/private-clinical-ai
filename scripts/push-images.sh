@@ -1,25 +1,36 @@
 #!/usr/bin/env bash
-# Mirror the HAPI image and build the loader image into ECR.
-# The VPC has no internet access, so ECS can only pull from ECR.
-#   HAPI_TAG=<pinned-version> LOADER_TAG=v1 ./scripts/push-images.sh
+# Build the images that come from this repository (the loader and the RAG service) and push them to
+# ECR. Third-party images (HAPI, vLLM, TEI) are mirrored by the import job instead (terraform/import.tf).
+#
+#   ./scripts/push-images.sh
+#
+# Each image is tagged with the last commit that changed its source folder, so the tag only moves when
+# the code does. ECR tags are immutable: an image already pushed under its tag is skipped.
 set -euo pipefail
-: "${HAPI_TAG:?set HAPI_TAG to a pinned hapiproject/hapi tag}"
-LOADER_TAG="${LOADER_TAG:-v1}"
-
 cd "$(dirname "$0")/.."
+
 TF="terraform -chdir=terraform"
-ECR_HAPI=$($TF output -raw ecr_hapi)
-ECR_LOADER=$($TF output -raw ecr_loader)
-REGISTRY="${ECR_HAPI%%/*}"
-REGION=$(echo "$REGISTRY" | cut -d. -f4)
+REPOS=$($TF output -json ecr_repositories)
+REGION=$($TF output -raw region)
+repo() { python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$REPOS" "$1"; }
+REGISTRY="$(repo rag)"
+REGISTRY="${REGISTRY%%/*}"
 
 aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
-docker pull --platform linux/amd64 "hapiproject/hapi:${HAPI_TAG}"
-docker tag "hapiproject/hapi:${HAPI_TAG}" "${ECR_HAPI}:${HAPI_TAG}"
-docker push "${ECR_HAPI}:${HAPI_TAG}"
+push() {
+  local name=$1 dir=$2 tag
+  tag=$(scripts/image-tag.sh "$dir")
+  if aws ecr describe-images --region "$REGION" --repository-name "$(repo "$name" | cut -d/ -f2-)" \
+    --image-ids imageTag="$tag" >/dev/null 2>&1; then
+    echo "$name:$tag already in ECR, skipping"
+    return
+  fi
+  # Fargate and the EKS nodes are x86_64, whatever the laptop is.
+  docker build --platform linux/amd64 -t "$(repo "$name"):$tag" "$dir"
+  docker push "$(repo "$name"):$tag"
+}
 
-docker build --platform linux/amd64 -t "${ECR_LOADER}:${LOADER_TAG}" loader/
-docker push "${ECR_LOADER}:${LOADER_TAG}"
-
-echo "Images pushed. ECR scan-on-push results: aws ecr describe-image-scan-findings ..."
+push fhir-loader loader
+push rag rag
+echo "Images pushed. ECR scans them on push: aws ecr describe-image-scan-findings --repository-name <name> --image-id imageTag=<tag>"

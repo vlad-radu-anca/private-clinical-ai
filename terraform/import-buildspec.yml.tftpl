@@ -1,0 +1,38 @@
+version: 0.2
+
+# Rendered by Terraform (import.tf). Pulls each image by digest, so a moved upstream tag cannot change
+# what is imported, and downloads each model at a fixed revision.
+phases:
+  install:
+    commands:
+      - pip3 install --quiet "huggingface_hub==2.4.0"
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${registry}
+  build:
+    commands:
+%{ for name, image in images ~}
+      - |
+        if aws ecr describe-images --region ${region} --repository-name "${trimprefix(repos[name], "${registry}/")}" --image-ids imageTag=${image.tag} >/dev/null 2>&1; then
+          echo "image ${name}:${image.tag} already in ECR, skipping"
+        else
+          docker pull "${image.source}@${image.digest}"
+          docker tag "${image.source}@${image.digest}" "${repos[name]}:${image.tag}"
+          docker push "${repos[name]}:${image.tag}"
+          docker rmi "${image.source}@${image.digest}" "${repos[name]}:${image.tag}"
+        fi
+%{ endfor ~}
+%{ for name, model in models ~}
+      - |
+        if aws s3 ls "s3://${bucket}/models/${name}/config.json" >/dev/null 2>&1; then
+          echo "model ${name} already in S3, skipping"
+        else
+          hf download "${model.repo}" --revision "${model.revision}" --local-dir "/tmp/models/${name}"
+          rm -rf "/tmp/models/${name}/.cache"
+          aws s3 sync "/tmp/models/${name}" "s3://${bucket}/models/${name}/" --sse aws:kms --sse-kms-key-id "${kms_key}" --only-show-errors
+          rm -rf "/tmp/models/${name}"
+        fi
+%{ endfor ~}
+  post_build:
+    commands:
+      - aws s3 ls "s3://${bucket}/models/" --recursive --summarize | tail -2

@@ -8,6 +8,7 @@ locals {
   interface_endpoints = toset([
     "ecr.api", "ecr.dkr", "logs", "secretsmanager", # ECS: pull images, ship logs, read DB secret
     "ssm", "ssmmessages", "ec2messages",            # Session Manager (bastion + ECS Exec)
+    "ec2", "sts", "eks-auth",                       # EKS nodes without internet: node identity, credentials, Pod Identity
   ])
   # No KMS endpoint needed: S3, RDS and Secrets Manager call KMS server-side.
 }

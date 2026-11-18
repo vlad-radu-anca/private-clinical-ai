@@ -1,0 +1,7 @@
+# On-demand job, applied by make aws-index through a generated overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: clinical-ai
+resources:
+  - tei-gpu.yaml
+  - job.yaml

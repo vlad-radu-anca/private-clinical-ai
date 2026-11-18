@@ -1,0 +1,79 @@
+# Text Embeddings Inference serving Qwen3-Embedding-0.6B on the CPU node, through an OpenAI-compatible
+# /v1/embeddings API, for the questions clinicians ask: one short text at a time. Bulk indexing uses a
+# GPU build instead (k8s/jobs/index/tei-gpu.yaml); on CPU it would take hours.
+#
+# Hardened as tested locally with the same image: non-root, read-only root filesystem, no capabilities.
+# --max-batch-tokens 4096: the default (16,384) made warm-up exceed the 4 GiB limit and get OOM-killed;
+# the RAG service's chunks are at most about 400 tokens.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tei
+  labels: { app: tei }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: tei }
+  template:
+    metadata:
+      labels: { app: tei }
+    spec:
+      serviceAccountName: model-fetch
+      nodeSelector:
+        workload: system
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: fetch-model
+          image: rag
+          command: ["python", "-m", "clinical_rag.aws", "fetch", "$(MODELS_URI)qwen3-embedding-0_6b/", "/models/qwen3-embedding"]
+          envFrom:
+            - configMapRef: { name: aws-settings }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+          resources:
+            requests: { cpu: 250m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: tei
+          image: tei
+          args: ["--model-id", "/models/qwen3-embedding", "--port", "8080", "--max-batch-tokens", "4096", "--json-output"]
+          env:
+            - { name: HF_HUB_OFFLINE, value: "1" }
+          ports:
+            - { name: http, containerPort: 8080 }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { memory: 4Gi }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: models
+          emptyDir: { sizeLimit: 5Gi }
+        - name: tmp
+          emptyDir: { sizeLimit: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tei
+spec:
+  selector: { app: tei }
+  ports:
+    - { name: http, port: 80, targetPort: http }

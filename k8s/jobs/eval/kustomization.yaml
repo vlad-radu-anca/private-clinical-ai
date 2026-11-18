@@ -1,0 +1,6 @@
+# On-demand job, applied by make aws-eval through a generated overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: clinical-ai
+resources:
+  - job.yaml

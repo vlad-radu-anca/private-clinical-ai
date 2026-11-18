@@ -1,0 +1,18 @@
+# Accepted Trivy findings, each with the reason. Every other HIGH or CRITICAL finding fails CI.
+misconfigurations:
+  - id: AWS-0040
+    paths: ["terraform/eks.tf"]
+    statement: >-
+      The Kubernetes API is public but restricted to one /32 (var.admin_cidr), so kubectl works from the
+      operator's laptop. Nodes, pods, data and model traffic stay inside the VPC. The stricter alternative,
+      a private-only API reached through the SSM bastion, is documented in eks.tf.
+  - id: KSV-0014
+    paths: ["k8s/base/vllm.yaml"]
+    statement: >-
+      vLLM writes compiled kernels and caches at startup; a read-only root filesystem has not been verified
+      on a GPU yet. Capabilities are dropped and privilege escalation is blocked. Tracked in the README roadmap.
+  - id: KSV-0118
+    paths: ["k8s/base/vllm.yaml"]
+    statement: >-
+      vLLM runs as the image's default user; running it non-root has not been verified on a GPU yet. Its
+      init container runs non-root, and the namespace enforces Pod Security "baseline". Tracked in the roadmap.

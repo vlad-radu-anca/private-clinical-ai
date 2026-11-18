@@ -1,0 +1,103 @@
+# vLLM serving Qwen3-8B on the GPU node, through an OpenAI-compatible API. Same model as the laptop
+# (qwen3:8b in Ollama), so the evaluation suite measures the same thing in both places.
+#
+# The vLLM container itself runs as the image's default (root) user with a writable filesystem: vLLM
+# compiles kernels and writes caches at startup, and running it non-root and read-only has not been
+# verified on a GPU yet. It is a documented exception (.trivyignore.yaml), not an oversight. Its
+# capabilities are dropped and privilege escalation is blocked, and the namespace enforces the
+# "baseline" Pod Security level, which rejects privileged containers and host access.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  labels: { app: vllm }
+spec:
+  replicas: 1
+  # One GPU node, one GPU: the old pod must go before the new one can start.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: vllm }
+  template:
+    metadata:
+      labels: { app: vllm }
+    spec:
+      serviceAccountName: model-fetch
+      # Lets the non-root init container write the model into the shared volume.
+      securityContext:
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      nodeSelector:
+        workload: gpu
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      initContainers:
+        # The cluster has no internet: weights are copied from the imported S3 copy, not Hugging Face.
+        - name: fetch-model
+          image: rag
+          command: ["python", "-m", "clinical_rag.aws", "fetch", "$(MODELS_URI)qwen3-8b/", "/models/qwen3-8b"]
+          envFrom:
+            - configMapRef: { name: aws-settings }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: vllm
+          image: vllm
+          args:
+            - /models/qwen3-8b
+            - --served-model-name=qwen3-8b
+            # 16k tokens of context: the largest prompts (summaries) are a few thousand. On a 24 GB L4
+            # the 16.4 GB of weights leave about 5 GB for the KV cache at 90% memory use.
+            - --max-model-len=16384
+            - --gpu-memory-utilization=0.90
+            - --port=8000
+          env:
+            # Offline and private: no calls to Hugging Face, and no usage statistics sent to vLLM's servers.
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: VLLM_NO_USAGE_STATS, value: "1" }
+            - { name: DO_NOT_TRACK, value: "1" }
+          ports:
+            - { name: http, containerPort: 8000 }
+          resources:
+            requests: { cpu: "2", memory: 10Gi }
+            limits: { memory: 14Gi, nvidia.com/gpu: 1 }
+          # Loading 16 GB of weights onto the GPU takes a few minutes.
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          volumeMounts:
+            - { name: models, mountPath: /models }
+            - { name: shm, mountPath: /dev/shm }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: models
+          emptyDir: { sizeLimit: 40Gi }
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 2Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+spec:
+  selector: { app: vllm }
+  ports:
+    - { name: http, port: 8000, targetPort: http }

@@ -1,0 +1,39 @@
+# Indexes every patient from HAPI into pgvector. Safe to re-run: each patient is replaced atomically.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: index
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: rag
+      nodeSelector:
+        workload: system
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: index
+          image: rag
+          command: ["python", "-m", "clinical_rag.index"]
+          envFrom:
+            - configMapRef: { name: aws-settings }
+          env:
+            - { name: DATABASE_NAME, value: rag }
+            - { name: LLM_BASE_URL, value: "http://vllm:8000/v1" }
+            - { name: LLM_BACKEND, value: vllm }
+            - { name: LLM_MODEL, value: qwen3-8b }
+            - { name: EMBED_BASE_URL, value: "http://tei-gpu/v1" }
+            - { name: EMBED_MODEL, value: qwen3-embedding }
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }

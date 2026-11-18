@@ -10,10 +10,12 @@ PATIENT ?= 7945
 Q       ?= Summarise the main diagnoses with their dates.
 
 .DEFAULT_GOAL := help
-.PHONY: help models up down generate load index health patients ask summary audit eval test ui
+.PHONY: help models up down generate load index health patients ask summary audit eval test ui \
+        aws-init aws-plan aws-apply aws-import aws-push aws-kubeconfig aws-deploy aws-data aws-index aws-eval \
+        aws-ui aws-status aws-gpu-off aws-destroy aws-leftovers
 
 help: ## Show the available targets
-	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
 
 models: ## Download the chat and embeddings models into Ollama
 	ollama pull qwen3:8b
@@ -60,3 +62,68 @@ eval: ## Score the RAG pipeline against answers known from the FHIR data
 test: ## Lint and unit tests, in a container like CI
 	docker run --rm -v "$(CURDIR)":/w -w /w python:3.13-slim sh -c \
 	  "pip install -q --root-user-action=ignore -r requirements-dev.txt && ruff check . && ruff format --check . && pytest -q"
+
+# ---------- AWS (phase 2). The first time, run in the order of README "Deploy phase 2 to AWS" ----------
+TF       := terraform -chdir=terraform
+KUBE     := kubectl -n clinical-ai
+HAPI_TAG := v8.12.0-2
+GPU      ?= 1
+HAPI     ?= 1
+# Your current public IP becomes the only address allowed to reach the Kubernetes API.
+AWS_VARS  = -var hapi_image_tag=$(HAPI_TAG) -var loader_image_tag=$$(scripts/image-tag.sh loader) \
+            -var hapi_desired_count=$(HAPI) -var gpu_node_count=$(GPU) \
+            -var admin_cidr=$$(curl -fsS https://checkip.amazonaws.com)/32
+
+aws-init: ## Initialise Terraform with the S3 backend (terraform/backend.hcl)
+	$(TF) init -backend-config=backend.hcl
+
+aws-plan: ## Show what aws-apply would change
+	$(TF) plan $(AWS_VARS)
+
+aws-apply: ## Create or update the stack. First time: make aws-apply HAPI=0 GPU=0
+	$(TF) apply $(AWS_VARS)
+
+aws-import: ## Mirror pinned images to ECR and models to S3 (CodeBuild, about 20 minutes the first time)
+	scripts/aws-import.sh "$$($(TF) output -raw import_project)"
+
+aws-push: ## Build and push the loader and RAG images
+	scripts/push-images.sh
+
+aws-kubeconfig: ## Add the cluster to your kubeconfig
+	$$($(TF) output -raw kubeconfig_command)
+
+aws-deploy: ## Deploy vLLM, TEI and the RAG API, and wait until they are ready
+	scripts/k8s-overlay.sh
+	kubectl apply -k k8s/build/app
+	$(KUBE) rollout status deploy/tei --timeout=10m
+	$(KUBE) rollout status deploy/rag --timeout=10m
+	$(KUBE) rollout status deploy/vllm --timeout=20m
+
+aws-data: ## Generate patients if needed, upload them and load them into HAPI
+	@test -d synthea/output/fhir || ./synthea/generate.sh
+	scripts/upload-bundles.sh run-1
+	scripts/run-loader.sh run-1
+
+aws-index: ## Index every patient into pgvector (Kubernetes job, logs followed)
+	scripts/run-job.sh index
+
+aws-eval: ## Run the evaluation suite against the deployed API (Kubernetes job, logs followed)
+	scripts/run-job.sh eval
+
+aws-ui: ## Clinician page on http://localhost:8000 and HAPI on http://localhost:8080 (Ctrl-C stops both)
+	scripts/aws-ui.sh
+
+aws-status: ## Nodes and pods
+	kubectl get nodes -L workload,node.kubernetes.io/instance-type
+	$(KUBE) get pods -o wide
+
+aws-gpu-off: ## Stop the GPU node, the largest cost, keeping everything else
+	$(TF) apply $(AWS_VARS) -var gpu_node_count=0
+
+aws-destroy: ## Delete everything this stack created
+	-$(KUBE) delete namespace clinical-ai --ignore-not-found --wait=true
+	$(TF) destroy $(AWS_VARS)
+
+aws-leftovers: ## List anything still tagged with this project (should be empty after aws-destroy)
+	aws resourcegroupstaggingapi get-resources --region eu-central-1 --tag-filters Key=Project,Values=clinical-ai \
+	  --query 'ResourceTagMappingList[].ResourceARN' --output table

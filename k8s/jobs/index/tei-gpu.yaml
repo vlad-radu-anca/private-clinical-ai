@@ -1,0 +1,81 @@
+# The embeddings server on the GPU, only while the index job runs. scripts/run-job.sh index stops vLLM
+# first (one GPU, quota for one node), starts this, runs the job, removes this and restarts vLLM.
+# Same software and model as the CPU server in k8s/base/tei.yaml, so the index and the questions are
+# embedded consistently.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tei-gpu
+  labels: { app: tei-gpu }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: tei-gpu }
+  template:
+    metadata:
+      labels: { app: tei-gpu }
+    spec:
+      serviceAccountName: model-fetch
+      nodeSelector:
+        workload: gpu
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: fetch-model
+          image: rag
+          command: ["python", "-m", "clinical_rag.aws", "fetch", "$(MODELS_URI)qwen3-embedding-0_6b/", "/models/qwen3-embedding"]
+          envFrom:
+            - configMapRef: { name: aws-settings }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+          resources:
+            requests: { cpu: 250m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: tei
+          image: tei-gpu
+          args: ["--model-id", "/models/qwen3-embedding", "--port", "8080", "--json-output"]
+          env:
+            - { name: HF_HUB_OFFLINE, value: "1" }
+          ports:
+            - { name: http, containerPort: 8080 }
+          resources:
+            requests: { cpu: "1", memory: 4Gi }
+            limits: { memory: 8Gi, nvidia.com/gpu: 1 }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: models
+          emptyDir: { sizeLimit: 5Gi }
+        - name: tmp
+          emptyDir: { sizeLimit: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tei-gpu
+spec:
+  selector: { app: tei-gpu }
+  ports:
+    - { name: http, port: 80, targetPort: http }

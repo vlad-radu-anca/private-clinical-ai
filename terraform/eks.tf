@@ -70,9 +70,15 @@ resource "aws_eks_cluster" "main" {
 }
 
 # Whoever runs Terraform gets cluster admin, through an access entry rather than the aws-auth ConfigMap.
+# Access entries need an IAM user or role ARN. When Terraform runs under an assumed role (a CI pipeline
+# through OIDC, or SSO), the caller ARN is a temporary session ARN, so it is resolved to the role first.
+data "aws_iam_session_context" "current" {
+  arn = data.aws_caller_identity.current.arn
+}
+
 resource "aws_eks_access_entry" "admin" {
   cluster_name  = aws_eks_cluster.main.name
-  principal_arn = data.aws_caller_identity.current.arn
+  principal_arn = data.aws_iam_session_context.current.issuer_arn
 }
 
 resource "aws_eks_access_policy_association" "admin" {

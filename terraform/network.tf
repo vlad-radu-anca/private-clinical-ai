@@ -4,6 +4,8 @@
 locals {
   name = "${var.project}-${var.environment}"
   azs  = slice(data.aws_availability_zones.available.names, 0, 2)
+  # GPU instances often run out in one zone, so the GPU node group may also use the region's other zones.
+  gpu_extra_azs = slice(data.aws_availability_zones.available.names, 2, length(data.aws_availability_zones.available.names))
 
   interface_endpoints = toset([
     "ecr.api", "ecr.dkr", "logs", "secretsmanager", # ECS: pull images, ship logs, read DB secret
@@ -36,6 +38,22 @@ resource "aws_route_table" "private" {
 resource "aws_route_table_association" "private" {
   count          = length(aws_subnet.private)
   subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+# Extra subnets used only by the GPU node group, in the zones after the first two. Same route table, so
+# the same S3 gateway endpoint; interface endpoints in the first two zones are reached across zones.
+resource "aws_subnet" "gpu" {
+  count             = length(local.gpu_extra_azs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 4, length(local.azs) + count.index)
+  availability_zone = local.gpu_extra_azs[count.index]
+  tags              = { Name = "${local.name}-gpu-${local.gpu_extra_azs[count.index]}" }
+}
+
+resource "aws_route_table_association" "gpu" {
+  count          = length(aws_subnet.gpu)
+  subnet_id      = aws_subnet.gpu[count.index].id
   route_table_id = aws_route_table.private.id
 }
 

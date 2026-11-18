@@ -190,10 +190,11 @@ resource "aws_eks_node_group" "gpu" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "gpu"
   node_role_arn   = aws_iam_role.eks_node.arn
-  subnet_ids      = aws_subnet.private[*].id
-  ami_type        = "BOTTLEROCKET_x86_64_NVIDIA"
-  instance_types  = [var.gpu_instance_type]
-  capacity_type   = "ON_DEMAND"
+  # Every zone in the region, so the node starts wherever a GPU is available (InsufficientInstanceCapacity).
+  subnet_ids     = concat(aws_subnet.private[*].id, aws_subnet.gpu[*].id)
+  ami_type       = "BOTTLEROCKET_x86_64_NVIDIA"
+  instance_types = [var.gpu_instance_type]
+  capacity_type  = "ON_DEMAND"
 
   # gpu_node_count = 0 stops the GPU, the largest cost, without destroying anything else. The
   # account's GPU quota allows exactly one node, so the group can never grow past one.

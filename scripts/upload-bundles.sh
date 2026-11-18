@@ -4,6 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 RUN="${1:-run-$(date +%Y%m%d-%H%M)}"
+# The stack's region, not the CLI default (which may be another region).
+AWS_REGION=$(terraform -chdir=terraform output -raw region)
+export AWS_REGION
 BUCKET=$(terraform -chdir=terraform output -raw data_bucket)
 KMS=$(terraform -chdir=terraform output -raw kms_key_arn)
 

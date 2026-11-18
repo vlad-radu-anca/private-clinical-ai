@@ -3,6 +3,10 @@
 #   scripts/aws-import.sh <codebuild-project-name>
 # About 20 minutes the first time; a minute when everything is already imported.
 set -euo pipefail
+cd "$(dirname "$0")/.."
+# The stack's region, not the CLI default (which may be another region).
+AWS_REGION=$(terraform -chdir=terraform output -raw region)
+export AWS_REGION
 project="${1:?usage: aws-import.sh <codebuild-project-name>}"
 
 build=$(aws codebuild start-build --project-name "$project" --query build.id --output text)

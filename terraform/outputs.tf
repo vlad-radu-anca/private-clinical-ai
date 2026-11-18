@@ -55,7 +55,7 @@ output "bastion_id" {
 
 output "port_forward_command" {
   description = "Run locally, then open http://localhost:8080/fhir/metadata"
-  value       = "aws ssm start-session --target ${aws_instance.bastion.id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=${aws_lb.fhir.dns_name},portNumber=80,localPortNumber=8080"
+  value       = "aws ssm start-session --region ${var.region} --target ${aws_instance.bastion.id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=${aws_lb.fhir.dns_name},portNumber=80,localPortNumber=8080"
 }
 
 # ---------- Phase 2 ----------

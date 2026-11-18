@@ -7,6 +7,9 @@ cd "$(dirname "$0")/.."
 RUN="${1:?usage: run-loader.sh <run-name> [--limit N]}"; shift || true
 
 TF="terraform -chdir=terraform"
+# The stack's region, not the CLI default (which may be another region).
+AWS_REGION=$($TF output -raw region)
+export AWS_REGION
 CLUSTER=$($TF output -raw ecs_cluster)
 TASKDEF=$($TF output -raw loader_task_definition)
 BUCKET=$($TF output -raw data_bucket)

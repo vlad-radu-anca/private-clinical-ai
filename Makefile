@@ -8,6 +8,12 @@ API     := http://localhost:8000
 USER    ?= dr.demo
 PATIENT ?= 7945
 Q       ?= Summarise the main diagnoses with their dates.
+# Where FHIR bundles are loaded from; a second Synthea batch or your own bundles (docs/working-with-data.md).
+SOURCE  ?= synthea/output/fhir
+# make index ONLY=<patient id> re-indexes one patient instead of all of them.
+ONLY    ?=
+# Name of the S3 folder a batch is uploaded to on AWS; a new name keeps earlier batches.
+RUN     ?= run-1
 
 .DEFAULT_GOAL := help
 .PHONY: help models up down generate load index health patients ask summary audit eval test ui \
@@ -31,11 +37,11 @@ down: ## Stop everything (data is kept in Docker volumes)
 generate: ## Generate 100 synthetic patients with Synthea
 	./synthea/generate.sh
 
-load: ## Load the generated patients into HAPI
-	python3 loader/load_fhir.py --source synthea/output/fhir --fhir-url http://localhost:8080/fhir
+load: ## Load FHIR bundles into HAPI (SOURCE=folder; patients already loaded are skipped)
+	python3 loader/load_fhir.py --source $(SOURCE) --fhir-url http://localhost:8080/fhir
 
-index: ## Index every patient into pgvector (re-running is safe)
-	$(JOB) python -m clinical_rag.index
+index: ## Index every patient into pgvector, or one with ONLY=<id> (re-running is safe)
+	$(JOB) python -m clinical_rag.index $(if $(ONLY),--patient $(ONLY))
 
 ui: ## Open the clinician page in your browser
 	open $(API)/ui/
@@ -110,10 +116,10 @@ aws-deploy: ## Deploy vLLM, TEI and the RAG API, and wait until they are ready
 	$(KUBE) rollout status deploy/rag --timeout=10m
 	$(KUBE) rollout status deploy/vllm --timeout=20m
 
-aws-data: ## Generate patients if needed, upload them and load them into HAPI
-	@test -d synthea/output/fhir || ./synthea/generate.sh
-	scripts/upload-bundles.sh run-1
-	scripts/run-loader.sh run-1
+aws-data: ## Upload bundles and load them into HAPI (RUN=name SOURCE=folder for another batch)
+	@test -d $(SOURCE) || ./synthea/generate.sh
+	scripts/upload-bundles.sh $(RUN) $(SOURCE)
+	scripts/run-loader.sh $(RUN) --workers 2
 
 aws-index: ## Index every patient into pgvector (Kubernetes job, logs followed)
 	scripts/run-job.sh index

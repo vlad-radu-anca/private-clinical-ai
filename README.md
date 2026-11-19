@@ -168,6 +168,10 @@ make eval                                                    # the evaluation su
 The API's interactive documentation is at http://localhost:8000/docs, and HAPI's own browser at
 http://localhost:8080/.
 
+**Your own data.** [docs/working-with-data.md](docs/working-with-data.md) lists which parts of a FHIR record the
+assistant can answer about, shows how to add more Synthea patients or a patient written by hand
+([an example bundle](docs/examples/handmade-patient.json)), and how to teach it a new kind of record.
+
 ### Stop and clean up
 
 ```bash

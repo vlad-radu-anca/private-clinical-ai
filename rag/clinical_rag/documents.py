@@ -93,10 +93,13 @@ def condition_chunk(pid: str, cond: dict) -> Chunk:
     onset = _day(cond.get("onsetDateTime"))
     resolved = _day(cond.get("abatementDateTime"))
     status = _display(cond.get("clinicalStatus"))
+    # Decide on the code, not the display text: Synthea sends {"code": "active"}, most other systems
+    # {"code": "active", "display": "Active"}. Both must count as current.
+    status_code = next((c.get("code") for c in (cond.get("clinicalStatus") or {}).get("coding", [])), None)
     text = f"Condition: {_display(cond.get('code'))}. Onset {onset or 'unknown'}."
     if resolved:
         text += f" Resolved {resolved}."
-    elif status == "active":
+    elif status_code == "active":
         text += f" {ACTIVE_CONDITION}"
     else:
         text += f" Clinical status: {status}."

@@ -45,6 +45,19 @@ def test_condition_uses_the_status_code_when_there_is_no_display_text():
     assert chunk.refs == ["Condition/c1"]
 
 
+def test_condition_with_a_display_text_still_counts_as_active():
+    # Data from other systems usually carries a display ("Active"); the code decides, so it stays current.
+    cond = {
+        "resourceType": "Condition",
+        "id": "c1",
+        "code": coded("Essential hypertension (disorder)", "59621000"),
+        "clinicalStatus": {"coding": [{"code": "active", "display": "Active"}]},
+    }
+    (chunk,) = by_kind(build_chunks([patient(), cond]), "condition")
+
+    assert ACTIVE_CONDITION in chunk.text
+
+
 def test_observations_are_grouped_per_code_in_date_order():
     resources = [patient(), hba1c("o2", "2025-04-08", 6.79), hba1c("o1", "2022-11-08", 6.31)]
 
@@ -142,3 +155,26 @@ def test_active_records_are_marked_with_the_phrases_the_store_selects_on():
     assert texts["Condition/c1"].endswith(ACTIVE_CONDITION)
     assert ACTIVE_MEDICATION in texts["MedicationRequest/m1"]
     assert ACTIVE_MEDICATION not in texts["MedicationRequest/m2"]
+
+
+def test_the_handmade_example_patient_is_fully_indexed():
+    # docs/examples/handmade-patient.json is the example in docs/working-with-data.md: every kind the
+    # index understands, written the way most systems write FHIR (display texts, plain dates).
+    import json
+    from pathlib import Path
+
+    bundle = json.loads((Path(__file__).parents[2] / "docs/examples/handmade-patient.json").read_text())
+    resources = [dict(entry["resource"], id=f"r{i}") for i, entry in enumerate(bundle["entry"])]
+    resources[0]["id"] = "p1"
+
+    chunks = build_chunks(resources)
+    kinds = sorted(c.kind for c in chunks)
+
+    expected = ["allergy", "condition", "condition", "immunization", "medication", "observation", "observation"]
+    assert kinds == [*expected, "patient"]
+    assert all(ACTIVE_CONDITION in c.text for c in by_kind(chunks, "condition"))
+    assert ACTIVE_MEDICATION in by_kind(chunks, "medication")[0].text
+    (hba1c_series,) = [c for c in by_kind(chunks, "observation") if "Hemoglobin A1c" in c.text]
+    assert "2024-01-15 7.4 %; 2025-01-20 6.9 %" in hba1c_series.text
+    (pressure,) = [c for c in by_kind(chunks, "observation") if "Blood pressure" in c.text]
+    assert "Systolic blood pressure 138 mm[Hg], Diastolic blood pressure 86 mm[Hg]" in pressure.text

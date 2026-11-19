@@ -11,7 +11,7 @@ variable "environment" {
 }
 
 variable "region" {
-  description = "EU region keeps data residency simple (GDPR)."
+  description = "AWS region. The default is in the EU, which keeps data residency simple (GDPR). Pick another region with GPU quota when this one has no GPU capacity (make ... REGION=eu-west-1)."
   type        = string
   default     = "eu-central-1"
 }
@@ -92,10 +92,27 @@ variable "system_instance_type" {
   default     = "m7i.large"
 }
 
-variable "gpu_instance_type" {
-  description = "Instance type of the GPU node. g6.xlarge: one NVIDIA L4 with 24 GB, 4 vCPUs."
+variable "gpu_instance_types" {
+  description = "Instance types for the GPU node, in order of preference; later ones are used only when earlier ones have no capacity. g6.xlarge: NVIDIA L4, g5.xlarge: NVIDIA A10G; both 24 GB of GPU memory and 4 vCPUs, so the same vLLM settings and the same GPU quota."
+  type        = list(string)
+  default     = ["g6.xlarge", "g5.xlarge"]
+}
+
+variable "gpu_capacity_reservation_id" {
+  description = "Optional On-Demand Capacity Reservation (cr-...) the GPU node must start in. Create it first to hold a GPU when capacity is scarce; it is billed while it exists and is not managed here, so cancel it after the destroy."
   type        = string
-  default     = "g6.xlarge"
+  default     = null
+}
+
+variable "gpu_capacity_reservation_az" {
+  description = "Availability zone of gpu_capacity_reservation_id (for example us-west-2b). A targeted reservation only works in its own zone, so the GPU node group is limited to that zone's subnet."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = (var.gpu_capacity_reservation_az == null) == (var.gpu_capacity_reservation_id == null)
+    error_message = "Set gpu_capacity_reservation_id and gpu_capacity_reservation_az together, or neither."
+  }
 }
 
 variable "gpu_node_count" {

@@ -13,6 +13,9 @@ metadata:
   labels: { app: vllm }
 spec:
   replicas: 1
+  # The first start on a new node takes over 10 minutes (the default deadline): model from S3, a 10 GB
+  # image pull, then 16 GB of weights onto the GPU.
+  progressDeadlineSeconds: 1800
   # One GPU node, one GPU: the old pod must go before the new one can start.
   strategy:
     type: Recreate
@@ -23,6 +26,10 @@ spec:
       labels: { app: vllm }
     spec:
       serviceAccountName: model-fetch
+      # No legacy service environment variables. Kubernetes would otherwise inject VLLM_PORT=tcp://...
+      # for the "vllm" Service, which vLLM reads as its own VLLM_PORT setting and refuses to start
+      # (found on the first AWS run). Services are found through DNS, so nothing needs these variables.
+      enableServiceLinks: false
       # Lets the non-root init container write the model into the shared volume.
       securityContext:
         fsGroup: 10001

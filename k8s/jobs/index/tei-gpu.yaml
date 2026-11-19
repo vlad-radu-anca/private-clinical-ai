@@ -9,6 +9,8 @@ metadata:
   labels: { app: tei-gpu }
 spec:
   replicas: 1
+  # First start on a node: image pull plus the model from S3 can pass the 10-minute default.
+  progressDeadlineSeconds: 1800
   selector:
     matchLabels: { app: tei-gpu }
   template:
@@ -16,6 +18,7 @@ spec:
       labels: { app: tei-gpu }
     spec:
       serviceAccountName: model-fetch
+      enableServiceLinks: false # services are found through DNS; see k8s/base/vllm.yaml
       nodeSelector:
         workload: gpu
       tolerations:
@@ -75,6 +78,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: tei-gpu
+  labels: { app: tei-gpu } # lets run-job.sh start the server before the job
 spec:
   selector: { app: tei-gpu }
   ports:

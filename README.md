@@ -185,6 +185,12 @@ The same service on EKS, in the phase 1 VPC: no internet gateway, no NAT, every 
 
 Numbers on the arrows follow the flows: 1 import images and models, 2 load patients, 3 index, 4 ask. The editable source is [docs/architecture.drawio](docs/architecture.drawio) (open it in draw.io or app.diagrams.net, then export it over docs/architecture.svg).
 
+**Deployed and evaluated on 19 November 2026** (us-west-2, one NVIDIA A10G): 105 patients indexed on the GPU in
+under 7 minutes, answers in 1 to 3 seconds, **136/141 (96%)** on the evaluation suite, against 136/139 on the
+laptop. The first real deploy also found nine problems that local runs and CI could not, from GPU capacity to a
+Kubernetes environment variable that stopped vLLM; each is fixed in code. Transcript, raw logs and the list:
+[docs/demo/aws-2026-11-19.md](docs/demo/aws-2026-11-19.md).
+
 | Decision | Why |
 | --- | --- |
 | Images and models enter through an import job | The cluster cannot reach the internet. A CodeBuild job copies each image **by digest** and each model **at a fixed revision** into ECR and S3, so everything that runs was imported deliberately and scanned on push. |
@@ -193,6 +199,7 @@ Numbers on the arrows follow the flows: 1 import images and models, 2 load patie
 | No database password in Kubernetes | The RAG pod reads the RDS-managed secret at startup through EKS Pod Identity. |
 | vLLM offline, no usage statistics | `HF_HUB_OFFLINE`, `VLLM_NO_USAGE_STATS` and `DO_NOT_TRACK` are set: vLLM reports usage by default. |
 | GPU node scales to zero | `make aws-gpu-off` stops the largest cost without destroying anything. The GPU quota (4 vCPUs) allows exactly one g6.xlarge. |
+| g5.xlarge as a fallback | GPU capacity runs out: on the first deploy, g6.xlarge was unavailable in all three eu-central-1 zones. The node group also spans every zone and falls back to g5.xlarge (NVIDIA A10G, same 24 GB, same quota) only when g6 cannot be launched. |
 | Kubernetes API public, but only from your IP | So `kubectl` works from a laptop. Data and model traffic never leave the VPC. A fully private API through the SSM bastion is the stricter alternative. |
 
 Accepted security findings, each with its reason, are in [.trivyignore.yaml](.trivyignore.yaml): the API endpoint above,
@@ -205,6 +212,14 @@ included, runs non-root with a read-only root filesystem.
   request it in Service Quotas a few days ahead).
 - An **AWS Budgets alert**. Left running, the stack costs about 38 USD a day.
 - AWS CLI with the Session Manager plugin, Terraform >= 1.10, kubectl and Docker.
+- **GPU capacity is not guaranteed.** On the first deploy (a weekday afternoon), eu-central-1 had no g6.xlarge in any
+  of its three zones and no g5.xlarge either; EC2 reports `InsufficientInstanceCapacity` in the GPU node group's
+  Auto Scaling activity while the node group stays in `CREATING`. Try off-peak, keep `GPU=0` until everything else
+  is ready, and set it back to 0 (or destroy) if no node appears, so a GPU does not start later unattended. To hold
+  a GPU once one is available, create an On-Demand Capacity Reservation for it. Creating the reservation is also
+  the quickest capacity check: it fails at once, for free, when the zone has no GPU. With GPU quota in a second
+  region, every AWS target takes `REGION=` (for example `make aws-apply REGION=eu-west-1 HAPI=0 GPU=0`); the
+  default stays eu-central-1, and the Makefile refuses a region other than the one the stack is deployed in.
 
 ### Deploy, test, destroy
 
@@ -231,6 +246,7 @@ make aws-destroy                # everything; then check with make aws-leftovers
 | | Per hour |
 | --- | --- |
 | GPU node, g6.xlarge on demand | 1.01 USD |
+| (g5.xlarge instead, only when g6 has no capacity) | (~1.26 USD) |
 | Phase 1 stack (HAPI, RDS, load balancer, endpoints) | 0.23 USD |
 | EKS control plane | 0.10 USD |
 | System node, m7i.large | ~0.12 USD |

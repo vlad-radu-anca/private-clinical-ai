@@ -11,8 +11,10 @@ locals {
   images = {
     vllm = { source = "vllm/vllm-openai", tag = "v0.34.0", digest = "sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1" }
     tei  = { source = "ghcr.io/huggingface/text-embeddings-inference", tag = "cpu-1.9.4", digest = "sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d" }
-    # GPU build for NVIDIA Ada (L4), used only while bulk indexing: on CPU, ~24,000 chunks take hours.
-    tei-gpu   = { source = "ghcr.io/huggingface/text-embeddings-inference", tag = "89-1.9.4", digest = "sha256:1a284d9ca1adcc20b78c261d4d052c06057f0a3cb49a15c5d2c00930f710fce2" }
+    # GPU build, used only while bulk indexing: on CPU, ~24,000 chunks take hours. The universal "cuda"
+    # build, not a per-generation one: the node can be an L4 (g6, Ada) or, when g6 has no capacity, an
+    # A10G (g5, Ampere), and the Ada-only "89" build refused to start on the A10G.
+    tei-gpu   = { source = "ghcr.io/huggingface/text-embeddings-inference", tag = "cuda-1.9.4", digest = "sha256:c831a5cedb89d62f7b0fdb59e2d73e8c30e10c1d5006897640e2ce58a71cedba" }
     hapi-fhir = { source = "hapiproject/hapi", tag = "v8.12.0-2", digest = "sha256:0ff86aac4c7bd13a1ee226444a70263bb46ed1c28ef543c30a44f865b80ca04e" }
   }
   models = {

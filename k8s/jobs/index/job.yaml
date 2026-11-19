@@ -11,6 +11,7 @@ spec:
     spec:
       restartPolicy: Never
       serviceAccountName: rag
+      enableServiceLinks: false # services are found through DNS; see k8s/base/vllm.yaml
       nodeSelector:
         workload: system
       securityContext:

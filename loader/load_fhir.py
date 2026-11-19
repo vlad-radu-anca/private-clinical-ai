@@ -22,6 +22,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 log = logging.getLogger("loader")
@@ -68,14 +69,50 @@ class S3Source:
         return self.s3.get_object(Bucket=self.bucket, Key=key)["Body"].read()
 
 
-def post_bundle(fhir_url, body, retries, timeout):
+SYNTHEA_SYSTEM = "https://github.com/synthetichealth/synthea"
+
+
+def patient_key(bundle):
+    """The Synthea identifier of the bundle's Patient, or None for bundles without one."""
+    for entry in bundle.get("entry", []):
+        resource = entry.get("resource", {})
+        if resource.get("resourceType") == "Patient":
+            for ident in resource.get("identifier", []):
+                if ident.get("system") == SYNTHEA_SYSTEM and ident.get("value"):
+                    return ident["value"]
+    return None
+
+
+def patient_exists(fhir_url, key, timeout):
+    """True if the server already holds a Patient with this Synthea identifier."""
+    query = urllib.parse.urlencode({"identifier": f"{SYNTHEA_SYSTEM}|{key}", "_summary": "count"})
+    req = urllib.request.Request(f"{fhir_url.rstrip('/')}/Patient?{query}", headers={"Accept": "application/fhir+json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.load(resp).get("total", 0) > 0
+
+
+def post_bundle(fhir_url, body, retries, timeout, key=None):
+    """POST a transaction bundle. Synthea creates every resource with a plain POST, so sending a bundle
+    twice duplicates the patient. A gateway timeout does not mean the server failed: it may still finish
+    the transaction. So before every retry, and before the first attempt, the server is asked whether
+    the patient is already there; if so, the bundle counts as loaded. This also makes re-runs resume."""
     req = urllib.request.Request(
         fhir_url.rstrip("/"),
         data=body,
         method="POST",
         headers={"Content-Type": "application/fhir+json", "Accept": "application/fhir+json"},
     )
+    err = None
     for attempt in range(1, retries + 1):
+        if key:
+            try:
+                if patient_exists(fhir_url, key, timeout):
+                    return "exists" if attempt == 1 else "committed"
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                err = f"existence check: {type(e).__name__}"
+                if attempt < retries:
+                    time.sleep(min(2**attempt, 30))
+                continue
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.status
@@ -91,11 +128,13 @@ def post_bundle(fhir_url, body, retries, timeout):
 
 
 def load_one(source, name, args):
+    """Returns (outcome, seconds); outcome is "loaded", "exists" (skipped) or "committed" (a timed-out
+    attempt that the server finished anyway)."""
     body = source.read(name)
-    json.loads(body)  # fail fast on corrupt files
+    key = patient_key(json.loads(body))  # also fails fast on corrupt files
     start = time.monotonic()
-    post_bundle(args.fhir_url, body, args.retries, args.timeout)
-    return time.monotonic() - start
+    outcome = post_bundle(args.fhir_url, body, args.retries, args.timeout, key)
+    return outcome if outcome in ("exists", "committed") else "loaded", time.monotonic() - start
 
 
 def main():
@@ -120,29 +159,36 @@ def main():
 
     # 1) Organizations / Practitioners first, sequentially
     for name in priority:
-        secs = load_one(source, name, args)
+        _, secs = load_one(source, name, args)
         log.info("loaded reference bundle %s in %.1fs", base(name), secs)
 
     # 2) Patients in parallel
-    ok, failed = 0, []
+    ok, skipped, failed = 0, 0, []
     with cf.ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(load_one, source, n, args): n for n in patients}
         for i, fut in enumerate(cf.as_completed(futures), 1):
             name = futures[fut]
             try:
-                fut.result()
-                ok += 1
+                outcome, _ = fut.result()
+                if outcome == "exists":
+                    skipped += 1
+                else:
+                    ok += 1
+                    if outcome == "committed":
+                        log.info("bundle %s: the server finished a timed-out attempt; not resent", safe_id(name))
             except Exception as e:  # noqa: BLE001
                 failed.append(name)
                 log.error("bundle %s failed: %s", safe_id(name), e)
             if i % 25 == 0 or i == len(patients):
-                log.info("progress %d/%d (ok=%d, failed=%d)", i, len(patients), ok, len(failed))
+                log.info(
+                    "progress %d/%d (ok=%d, already loaded=%d, failed=%d)", i, len(patients), ok, skipped, len(failed)
+                )
 
     if failed:
         with open("failed_bundles.txt", "w") as fh:
             fh.write("\n".join(failed) + "\n")
         log.warning("%d bundles failed; list written to failed_bundles.txt", len(failed))
-    log.info("done: %d loaded, %d failed", ok, len(failed))
+    log.info("done: %d loaded, %d already loaded, %d failed", ok, skipped, len(failed))
     return 1 if failed else 0
 
 

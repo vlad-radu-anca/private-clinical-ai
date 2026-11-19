@@ -12,7 +12,7 @@ Q       ?= Summarise the main diagnoses with their dates.
 .DEFAULT_GOAL := help
 .PHONY: help models up down generate load index health patients ask summary audit eval test ui \
         aws-init aws-plan aws-apply aws-import aws-push aws-kubeconfig aws-deploy aws-data aws-index aws-eval \
-        aws-ui aws-status aws-gpu-off aws-destroy aws-leftovers
+        aws-ui aws-status aws-gpu-off aws-destroy aws-leftovers region-guard
 
 help: ## Show the available targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -69,18 +69,29 @@ KUBE     := kubectl -n clinical-ai
 HAPI_TAG := v8.12.0-2
 GPU      ?= 1
 HAPI     ?= 1
+# Where to deploy: any region with GPU quota ("Running On-Demand G and VT instances", 4 vCPUs). The default
+# stays in the EU for data residency; eu-west-1 is the usual fallback when Frankfurt has no GPU capacity.
+REGION   ?= eu-central-1
 # Your current public IP becomes the only address allowed to reach the Kubernetes API.
 AWS_VARS  = -var hapi_image_tag=$(HAPI_TAG) -var loader_image_tag=$$(scripts/image-tag.sh loader) \
-            -var hapi_desired_count=$(HAPI) -var gpu_node_count=$(GPU) \
+            -var hapi_desired_count=$(HAPI) -var gpu_node_count=$(GPU) -var region=$(REGION) \
             -var admin_cidr=$$(curl -fsS https://checkip.amazonaws.com)/32
+
+# Refuse to plan or apply in one region while the stack still exists in another: Terraform would build a
+# second copy and lose track of the first.
+region-guard:
+	@deployed=$$($(TF) output -raw region 2>/dev/null || true); \
+	if [ -n "$$deployed" ] && [ "$$deployed" != "$(REGION)" ]; then \
+	  echo "The stack is deployed in $$deployed. Use REGION=$$deployed, or destroy it there first." >&2; exit 1; \
+	fi
 
 aws-init: ## Initialise Terraform with the S3 backend (terraform/backend.hcl)
 	$(TF) init -backend-config=backend.hcl
 
-aws-plan: ## Show what aws-apply would change
+aws-plan: region-guard ## Show what aws-apply would change
 	$(TF) plan $(AWS_VARS)
 
-aws-apply: ## Create or update the stack. First time: make aws-apply HAPI=0 GPU=0
+aws-apply: region-guard ## Create or update the stack. First time: make aws-apply HAPI=0 GPU=0
 	$(TF) apply $(AWS_VARS)
 
 aws-import: ## Mirror pinned images to ECR and models to S3 (CodeBuild, about 20 minutes the first time)
@@ -117,13 +128,13 @@ aws-status: ## Nodes and pods
 	kubectl get nodes -L workload,node.kubernetes.io/instance-type
 	$(KUBE) get pods -o wide
 
-aws-gpu-off: ## Stop the GPU node, the largest cost, keeping everything else
+aws-gpu-off: region-guard ## Stop the GPU node, the largest cost, keeping everything else
 	$(TF) apply $(AWS_VARS) -var gpu_node_count=0
 
-aws-destroy: ## Delete everything this stack created
+aws-destroy: region-guard ## Delete everything this stack created
 	-$(KUBE) delete namespace clinical-ai --ignore-not-found --wait=true
 	$(TF) destroy $(AWS_VARS)
 
 aws-leftovers: ## List anything still tagged with this project (should be empty after aws-destroy)
-	aws resourcegroupstaggingapi get-resources --region eu-central-1 --tag-filters Key=Project,Values=clinical-ai \
+	aws resourcegroupstaggingapi get-resources --region $(REGION) --tag-filters Key=Project,Values=clinical-ai \
 	  --query 'ResourceTagMappingList[].ResourceARN' --output table

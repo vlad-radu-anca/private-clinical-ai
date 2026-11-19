@@ -1,6 +1,7 @@
 # Phase 2: EKS in the same private VPC. Two node groups:
 #   system  Bottlerocket, CPU: RAG API, embeddings server (TEI), indexer and evaluation jobs
-#   gpu     Bottlerocket NVIDIA, one g6.xlarge (NVIDIA L4, 24 GB): vLLM serving the chat model
+#   gpu     Bottlerocket NVIDIA, one g6.xlarge (NVIDIA L4, 24 GB), or g5.xlarge (A10G, 24 GB) when g6 has
+#           no capacity: vLLM serving the chat model
 # Bottlerocket is a minimal, immutable OS for containers. Its NVIDIA variant ships the driver (580
 # series, needed by vLLM's CUDA 13 build) and the Kubernetes device plugin, so nothing GPU-related
 # has to be installed into the cluster.
@@ -155,6 +156,18 @@ resource "aws_launch_template" "node" {
     http_put_response_hop_limit = 1 # pods cannot reach the node's instance metadata, only Pod Identity
   }
 
+  # With a reservation, the GPU node can only start inside it: launches in other zones or of other types
+  # fail, and the Auto Scaling group moves on until it lands in the reserved zone. Without this, the node
+  # could start elsewhere while the idle reservation is still billed.
+  dynamic "capacity_reservation_specification" {
+    for_each = each.key == "gpu" && var.gpu_capacity_reservation_id != null ? [1] : []
+    content {
+      capacity_reservation_target {
+        capacity_reservation_id = var.gpu_capacity_reservation_id
+      }
+    }
+  }
+
   tag_specifications {
     resource_type = "instance"
     tags          = { Name = "${local.name}-${each.key}" }
@@ -191,9 +204,13 @@ resource "aws_eks_node_group" "gpu" {
   node_group_name = "gpu"
   node_role_arn   = aws_iam_role.eks_node.arn
   # Every zone in the region, so the node starts wherever a GPU is available (InsufficientInstanceCapacity).
-  subnet_ids     = concat(aws_subnet.private[*].id, aws_subnet.gpu[*].id)
+  # With a capacity reservation, only its zone: EKS rejects subnets the reservation cannot serve.
+  subnet_ids = [
+    for s in concat(aws_subnet.private, aws_subnet.gpu) : s.id
+    if var.gpu_capacity_reservation_az == null || s.availability_zone == var.gpu_capacity_reservation_az
+  ]
   ami_type       = "BOTTLEROCKET_x86_64_NVIDIA"
-  instance_types = [var.gpu_instance_type]
+  instance_types = var.gpu_instance_types # On-Demand node groups try them in this order
   capacity_type  = "ON_DEMAND"
 
   # gpu_node_count = 0 stops the GPU, the largest cost, without destroying anything else. The

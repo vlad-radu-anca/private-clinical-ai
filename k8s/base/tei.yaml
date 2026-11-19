@@ -3,8 +3,10 @@
 # GPU build instead (k8s/jobs/index/tei-gpu.yaml); on CPU it would take hours.
 #
 # Hardened as tested locally with the same image: non-root, read-only root filesystem, no capabilities.
-# --max-batch-tokens 4096: the default (16,384) made warm-up exceed the 4 GiB limit and get OOM-killed;
-# the RAG service's chunks are at most about 400 tokens.
+# Memory: warm-up runs one batch of --max-batch-tokens. Locally (amd64 under emulation) the default 16,384
+# exceeded 4 GiB and 4096 fit; on the real x86 node (m7i.large) 4096 was OOM-killed at 4 GiB too. 2048 is
+# plenty: this server only embeds questions, a few dozen tokens each. The limit leaves the node room for
+# the RAG API and one job (8 GiB node, ~7 GiB allocatable).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,6 +14,10 @@ metadata:
   labels: { app: tei }
 spec:
   replicas: 1
+  # Replace, do not overlap: the system node (2 vCPUs) cannot fit a second TEI next to the first, so a
+  # rolling update would wait forever for room (found on the first AWS run).
+  strategy:
+    type: Recreate
   selector:
     matchLabels: { app: tei }
   template:
@@ -19,6 +25,7 @@ spec:
       labels: { app: tei }
     spec:
       serviceAccountName: model-fetch
+      enableServiceLinks: false # services are found through DNS; see vllm.yaml for why this matters
       nodeSelector:
         workload: system
       securityContext:
@@ -45,14 +52,14 @@ spec:
       containers:
         - name: tei
           image: tei
-          args: ["--model-id", "/models/qwen3-embedding", "--port", "8080", "--max-batch-tokens", "4096", "--json-output"]
+          args: ["--model-id", "/models/qwen3-embedding", "--port", "8080", "--max-batch-tokens", "2048", "--json-output"]
           env:
             - { name: HF_HUB_OFFLINE, value: "1" }
           ports:
             - { name: http, containerPort: 8080 }
           resources:
-            requests: { cpu: "1", memory: 2Gi }
-            limits: { memory: 4Gi }
+            requests: { cpu: "1", memory: 3Gi }
+            limits: { memory: 6Gi }
           readinessProbe:
             httpGet: { path: /health, port: http }
             periodSeconds: 10

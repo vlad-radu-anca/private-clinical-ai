@@ -9,6 +9,7 @@ contain patient names.
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -20,11 +21,15 @@ REFERENCE = ["hospitalInformation1700000000000.json", "practitionerInformation17
 
 
 class FakeFhir:
-    """Records received bundles. `plan` maps a bundle id to the status codes to return, in order."""
+    """Records received bundles. `plan` maps a bundle id to the status codes to return, in order.
+    Bundle ids in `commit_anyway` are stored even when an error is returned, like a transaction that
+    the server finished after the load balancer had already given up (HTTP 504)."""
 
     def __init__(self):
         self.received = []
         self.plan = {}
+        self.commit_anyway = set()
+        self.patients = []  # Synthea identifiers of stored Patient resources
         self.lock = threading.Lock()
 
     def handler(self):
@@ -37,10 +42,25 @@ class FakeFhir:
                 with fake.lock:
                     codes = fake.plan.get(bundle_id, [])
                     status = codes.pop(0) if codes else 200
-                    if status == 200:
+                    if status == 200 or bundle_id in fake.commit_anyway:
                         fake.received.append(bundle_id)
+                        key = load_fhir.patient_key(body)
+                        if key:
+                            fake.patients.append(key)
                 self.send_response(status)
                 self.end_headers()
+
+            def do_GET(self):
+                query = parse_qs(urlparse(self.path).query)
+                key = query["identifier"][0].split("|", 1)[1]
+                with fake.lock:
+                    total = fake.patients.count(key)
+                payload = json.dumps({"resourceType": "Bundle", "total": total}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/fhir+json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
 
             def log_message(self, *args):
                 pass
@@ -109,6 +129,37 @@ def test_logs_never_contain_patient_names(monkeypatch, tmp_path, fhir, bundles, 
     for name in ("Alice", "Bob", "Carol", "Smith", "Jones", "White"):
         assert name not in caplog.text
     assert load_fhir.safe_id("Carol_White_3333.json") in caplog.text
+
+
+def write_patient_bundles(path):
+    """Bundles shaped like Synthea's: a Patient with the Synthea identifier, created by plain POST."""
+    for i, name in enumerate(PATIENTS):
+        ident = {"system": load_fhir.SYNTHEA_SYSTEM, "value": f"uuid-{i}"}
+        patient = {"resourceType": "Patient", "identifier": [ident]}
+        bundle = {"resourceType": "Bundle", "id": name, "entry": [{"resource": patient, "request": {"method": "POST"}}]}
+        (path / name).write_text(json.dumps(bundle))
+
+
+def test_timed_out_bundle_that_the_server_finished_is_not_sent_again(monkeypatch, tmp_path, fhir, bundles):
+    write_patient_bundles(bundles)
+    fhir.plan = {"Bob_Jones_2222.json": [504]}
+    fhir.commit_anyway = {"Bob_Jones_2222.json"}
+
+    assert run(monkeypatch, tmp_path, bundles, fhir.url) == 0
+
+    assert fhir.received.count("Bob_Jones_2222.json") == 1
+    assert sorted(fhir.patients) == ["uuid-0", "uuid-1", "uuid-2"]
+
+
+def test_second_run_skips_patients_already_loaded(monkeypatch, tmp_path, fhir, bundles, caplog):
+    caplog.set_level("INFO")
+    write_patient_bundles(bundles)
+    assert run(monkeypatch, tmp_path, bundles, fhir.url) == 0
+
+    assert run(monkeypatch, tmp_path, bundles, fhir.url) == 0
+
+    assert sorted(fhir.patients) == ["uuid-0", "uuid-1", "uuid-2"]
+    assert "0 loaded, 3 already loaded, 0 failed" in caplog.text
 
 
 def test_limit_applies_to_patients_only(monkeypatch, tmp_path, fhir, bundles):

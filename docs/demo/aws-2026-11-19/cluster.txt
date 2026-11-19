@@ -1,0 +1,11 @@
+kubectl get nodes -L workload,node.kubernetes.io/instance-type
+NAME                                         STATUS   ROLES    AGE    VERSION               WORKLOAD   INSTANCE-TYPE
+ip-10-40-17-93.us-west-2.compute.internal    Ready    <none>   169m   v1.36.5-eks-577a51e   system     m7i.large
+ip-10-40-19-228.us-west-2.compute.internal   Ready    <none>   165m   v1.36.5-eks-577a51e   gpu        g5.xlarge
+kubectl -n clinical-ai get pods -o wide
+NAME                   READY   STATUS      RESTARTS   AGE     IP             NODE                                         NOMINATED NODE   READINESS GATES
+eval-w6vz2             1/1     Running     0          3m56s   10.40.22.76    ip-10-40-17-93.us-west-2.compute.internal    <none>           <none>
+index-r9www            0/1     Completed   0          20m     10.40.22.76    ip-10-40-17-93.us-west-2.compute.internal    <none>           <none>
+rag-678dcb8dd4-wvqmj   1/1     Running     0          117m    10.40.30.41    ip-10-40-17-93.us-west-2.compute.internal    <none>           <none>
+tei-69d7c54454-zcfds   1/1     Running     0          100m    10.40.26.11    ip-10-40-17-93.us-west-2.compute.internal    <none>           <none>
+vllm-56f4d47d5-x4t4f   1/1     Running     0          13m     10.40.16.203   ip-10-40-19-228.us-west-2.compute.internal   <none>           <none>

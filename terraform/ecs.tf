@@ -104,6 +104,10 @@ resource "aws_lb" "fhir" {
   security_groups            = [aws_security_group.alb.id]
   subnets                    = aws_subnet.private[*].id
   drop_invalid_header_fields = true
+  # A whole patient history is one FHIR transaction; on 1 vCPU some take over a minute. With the default
+  # 60 s the ALB answered 504 while HAPI was still writing, and the loader's retry could duplicate the
+  # patient. Matches the loader's own per-bundle timeout (300 s).
+  idle_timeout = 300
 }
 
 resource "aws_lb_target_group" "hapi" {

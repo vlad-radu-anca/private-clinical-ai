@@ -18,6 +18,10 @@ SG=$($TF output -raw client_security_group)
 
 CMD=$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1:]))' --source "s3://${BUCKET}/synthea/${RUN}/" "$@")
 
+# HAPI takes a few minutes to start after a scale-up; loading before that only burns retries.
+echo "waiting for HAPI to be running and healthy"
+aws ecs wait services-stable --cluster "$CLUSTER" --services hapi
+
 TASK_ARN=$(aws ecs run-task \
   --cluster "$CLUSTER" \
   --task-definition "$TASKDEF" \
@@ -27,4 +31,23 @@ TASK_ARN=$(aws ecs run-task \
   --query 'tasks[0].taskArn' --output text)
 
 echo "Started loader task: $TASK_ARN"
-echo "Follow logs: aws logs tail /${CLUSTER}/loader --follow"
+echo "Full logs: aws logs tail /${CLUSTER}/loader --follow"
+
+# Wait for the task to finish (the next step, indexing, needs every patient in HAPI) and report its
+# result. The CLI's own waiter gives up after 10 minutes; a full load can take longer.
+started=$(date +%s)
+while :; do
+  status=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --query 'tasks[0].lastStatus' --output text)
+  [[ "$status" == STOPPED ]] && break
+  progress=$(aws logs tail "/${CLUSTER}/loader" --since 2m --format short 2>/dev/null | grep -E 'progress|loaded reference' | tail -1 || true)
+  echo "$(( ($(date +%s) - started) / 60 )) min  ${status}  ${progress##* INFO }"
+  sleep 60
+done
+
+aws logs tail "/${CLUSTER}/loader" --since 2h --format short | grep -E 'done:|ERROR|WARNING' | tail -10 || true
+exit_code=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --query 'tasks[0].containers[0].exitCode' --output text)
+if [[ "$exit_code" != 0 ]]; then
+  echo "loader failed (exit code $exit_code); a re-run resumes: patients already in HAPI are skipped" >&2
+  exit 1
+fi
+echo "loader finished"

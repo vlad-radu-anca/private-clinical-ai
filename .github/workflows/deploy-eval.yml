@@ -1,0 +1,201 @@
+name: Deploy, evaluate, destroy
+
+# An ephemeral environment, started by hand: find a GPU, build the whole stack, load and index the
+# synthetic patients, run the evaluation suite as a quality gate, keep the logs as evidence, and destroy
+# everything, whether the run passed, failed or was cancelled. About two hours and a few dollars per run.
+#
+# It runs the same make targets as a laptop (README "Deploy, test, destroy"), so the two paths cannot
+# drift apart. AWS access is the deploy role (bootstrap/), assumed through GitHub's OIDC token, and only
+# from the aws-demo environment, which should require a reviewer's approval.
+
+on:
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: Regions to look for a GPU in, in order of preference (each needs G-instance quota)
+        default: eu-west-1 eu-central-1 us-west-2
+      gpu_types:
+        description: GPU instance types, in order of preference (24 GB of GPU memory each)
+        default: g6.xlarge g5.xlarge
+      min_score:
+        description: Lowest acceptable evaluation score, in percent
+        default: "90"
+
+permissions:
+  contents: read
+  id-token: write # the OIDC token AWS exchanges for the deploy role
+
+# One environment at a time: two runs would fight over the same state and the same GPU quota.
+concurrency:
+  group: aws-demo
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.16.4"
+  # Non-interactive Terraform for the make targets, which are written for a person at a terminal.
+  TF_CLI_ARGS_apply: "-auto-approve -input=false"
+  TF_CLI_ARGS_destroy: "-auto-approve -input=false"
+  TF_IN_AUTOMATION: "1"
+
+jobs:
+  deploy-eval:
+    name: deploy, evaluate, destroy
+    runs-on: ubuntu-latest
+    environment: aws-demo
+    # Each step has its own limit, so a hung step fails early and the destroy below always runs inside the
+    # deploy role's four-hour credentials.
+    timeout-minutes: 235
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # image tags come from the git history of each image's folder
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-2 # where API calls go by default; every step names its region
+          role-duration-seconds: 14400 # the role's maximum: credentials must outlive the destroy
+          mask-aws-account-id: true
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: actions/setup-java@v5 # Synthea, to generate the synthetic patients
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Configure the state backend
+        run: |
+          cat > terraform/backend.hcl <<EOF
+          bucket       = "${{ vars.TF_STATE_BUCKET }}"
+          key          = "private-clinical-ai/terraform.tfstate"
+          region       = "${{ vars.TF_STATE_REGION || 'us-west-2' }}"
+          encrypt      = true
+          use_lockfile = true
+          EOF
+          terraform -chdir=terraform init -input=false -no-color >/dev/null
+
+      # ---------- 1. A GPU first: without one there is nothing to deploy, and nothing has been spent ----------
+      - name: Reserve a GPU
+        id: gpu
+        env:
+          REGIONS: ${{ inputs.regions }}
+          GPU_TYPES: ${{ inputs.gpu_types }}
+        run: |
+          scripts/reserve-gpu.sh "$REGIONS" "$GPU_TYPES" > gpu.env
+          cat gpu.env >> "$GITHUB_OUTPUT"
+          # shellcheck disable=SC1091
+          . ./gpu.env
+          {
+            echo "REGION=$region"
+            echo "TF_VAR_gpu_capacity_reservation_id=$id"
+            echo "TF_VAR_gpu_capacity_reservation_az=$az"
+            echo "TF_VAR_gpu_instance_types=[\"$type\"]"
+          } >> "$GITHUB_ENV"
+          echo "### GPU: $type in $az" >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- 2. Build, as on a laptop ----------
+      - name: Infrastructure, without HAPI (its image is not imported yet)
+        timeout-minutes: 30
+        run: make aws-apply HAPI=0 GPU=1
+
+      - name: Import pinned images and models
+        timeout-minutes: 30
+        run: make aws-import
+
+      - name: Build and push the loader and RAG images
+        timeout-minutes: 15
+        run: make aws-push
+
+      - name: Start HAPI
+        timeout-minutes: 10
+        run: make aws-apply HAPI=1 GPU=1
+
+      - name: Deploy vLLM, TEI and the RAG API
+        timeout-minutes: 30
+        run: |
+          make aws-kubeconfig
+          make aws-deploy
+
+      - name: Generate and load the synthetic patients
+        timeout-minutes: 40
+        run: make aws-data
+
+      - name: Index
+        timeout-minutes: 15
+        run: make aws-index
+
+      # ---------- 3. The quality gate ----------
+      - name: Evaluate
+        timeout-minutes: 20
+        id: eval
+        env:
+          MIN_SCORE: ${{ inputs.min_score }}
+        run: |
+          make aws-eval 2>&1 | tee eval.log
+          score=$(grep -oE 'overall +[0-9]+/[0-9]+ = [0-9]+%' eval.log | grep -oE '[0-9]+%' | tr -d %)
+          line=$(grep -oE 'overall +[0-9]+/[0-9]+ = [0-9]+%' eval.log | tr -s ' ')
+          echo "score=$score" >> "$GITHUB_OUTPUT"
+          echo "### Evaluation: ${line#overall } (minimum ${MIN_SCORE}%)" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -z "$score" || "$score" -lt "$MIN_SCORE" ]]; then
+            echo "::error::evaluation score ${score:-missing}% is below ${MIN_SCORE}%"
+            exit 1
+          fi
+
+      # ---------- 4. Evidence and teardown, whatever happened above ----------
+      - name: Collect evidence
+        if: always() && steps.gpu.outputs.id != ''
+        run: |
+          mkdir -p evidence
+          cp eval.log evidence/ 2>/dev/null || true
+          make aws-status > evidence/cluster.txt 2>&1 || true
+          kubectl -n clinical-ai logs job/index 2>/dev/null | grep -v 'HTTP Request' > evidence/index.log || true
+          kubectl -n clinical-ai logs deploy/vllm -c vllm 2>/dev/null \
+            | grep -E 'version|Model loading took|GPU KV cache|Graph capturing|startup complete|throughput' > evidence/vllm.log || true
+          kubectl -n clinical-ai get events --sort-by=.lastTimestamp > evidence/events.txt 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.gpu.outputs.id != ''
+        with:
+          name: evidence-${{ github.run_number }}
+          path: evidence/
+          retention-days: 30
+
+      - name: Destroy
+        timeout-minutes: 40
+        if: always() && steps.gpu.outputs.id != ''
+        run: |
+          # A second attempt covers the occasional dependency that is still being released (an ENI, a
+          # load balancer) when the first destroy reaches it.
+          make aws-destroy || { sleep 60; make aws-destroy; }
+
+      - name: Cancel the GPU reservation
+        if: always() && steps.gpu.outputs.id != ''
+        env:
+          GPU_REGION: ${{ steps.gpu.outputs.region }}
+          GPU_ID: ${{ steps.gpu.outputs.id }}
+        run: |
+          aws ec2 cancel-capacity-reservation --region "$GPU_REGION" --capacity-reservation-id "$GPU_ID" --output text
+          aws ec2 describe-capacity-reservations --region "$GPU_REGION" --capacity-reservation-ids "$GPU_ID" \
+            --query 'CapacityReservations[0].State' --output text
+
+      - name: Check for leftovers
+        if: always() && steps.gpu.outputs.id != ''
+        env:
+          GPU_REGION: ${{ steps.gpu.outputs.region }}
+        run: |
+          # The tagging API lags behind deletions, so ask the services that cost money directly.
+          running=$(aws ec2 describe-instances --region "$GPU_REGION" \
+            --filters Name=tag:Project,Values=clinical-ai Name=instance-state-name,Values=pending,running,stopping,stopped \
+            --query 'length(Reservations[].Instances[])' --output text)
+          clusters=$(aws eks list-clusters --region "$GPU_REGION" --query 'length(clusters)' --output text)
+          databases=$(aws rds describe-db-instances --region "$GPU_REGION" --query 'length(DBInstances)' --output text)
+          echo "instances=$running eks_clusters=$clusters databases=$databases"
+          if [[ "$running" != 0 || "$clusters" != 0 || "$databases" != 0 ]]; then
+            echo "::error::resources left in $GPU_REGION; check and run make aws-destroy REGION=$GPU_REGION"
+            exit 1
+          fi
+          echo "### Destroyed: nothing left running in $GPU_REGION" >> "$GITHUB_STEP_SUMMARY"

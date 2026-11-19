@@ -28,6 +28,14 @@ if [[ "$job" == index ]]; then
   "${kube[@]}" wait --for=delete pod -l app=vllm --timeout=5m
 fi
 
+if [[ "$job" == eval ]]; then
+  # The evaluation asks the RAG API, which needs the model. Right after an index vLLM is still reloading
+  # (about five minutes), and every question asked meanwhile would fail.
+  echo "waiting for vLLM and the RAG API to be ready"
+  "${kube[@]}" rollout status deployment/vllm --timeout=20m
+  "${kube[@]}" rollout status deployment/rag --timeout=5m
+fi
+
 if [[ "$job" == index ]]; then
   # The embeddings server must be serving before the job starts: the job fails on its first refused
   # connection (backoffLimit 0), and on a fresh node the image pull alone takes minutes.

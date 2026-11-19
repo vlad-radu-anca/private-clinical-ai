@@ -1,0 +1,105 @@
+name: Terraform plan
+
+# On every pull request that touches the stack: what would `make aws-apply` change? The result is posted
+# on the pull request, so a reviewer sees the infrastructure change next to the code change.
+#
+# Runs with the read-only plan role (bootstrap/), through GitHub's OIDC token: no AWS keys are stored in
+# GitHub. The plan never takes the state lock, so it cannot block or race a deploy.
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - "loader/**"
+      - "scripts/image-tag.sh"
+      - "Makefile"
+      - ".github/workflows/plan.yml"
+
+permissions:
+  contents: read
+  id-token: write # the OIDC token AWS exchanges for the plan role
+  pull-requests: write # the plan comment
+
+concurrency:
+  group: plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: "1.16.4" # the state was written by 1.16.4; an older Terraform refuses to read it
+  REGION: ${{ vars.DEPLOY_REGION || 'us-west-2' }}
+
+jobs:
+  plan:
+    name: terraform plan
+    # OIDC tokens are not issued to pull requests from forks; plan only pull requests from this repository.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # image tags are derived from the git history of each image's folder
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+          mask-aws-account-id: true
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure the state backend
+        run: |
+          cat > terraform/backend.hcl <<EOF
+          bucket       = "${{ vars.TF_STATE_BUCKET }}"
+          key          = "private-clinical-ai/terraform.tfstate"
+          region       = "${{ vars.TF_STATE_REGION || 'us-west-2' }}"
+          encrypt      = true
+          use_lockfile = true
+          EOF
+          terraform -chdir=terraform init -input=false -no-color >/dev/null
+
+      - name: Plan
+        env:
+          # Same variables as on a laptop (make aws-plan), plus: no lock, and save the plan for the summary.
+          TF_CLI_ARGS_plan: "-lock=false -input=false -no-color -out=tfplan"
+        # The full plan holds account IDs in every ARN, and logs are public once the repository is. So the
+        # log shows it only when planning fails, and the comment lists resources, not attributes.
+        run: |
+          if ! make aws-plan REGION="$REGION" HAPI=0 GPU=0 > plan.log 2>&1; then
+            cat plan.log
+            exit 1
+          fi
+          terraform -chdir=terraform show -json tfplan > plan.json
+
+      - name: Summarise
+        run: |
+          jq -r '
+            [.resource_changes[] | select(.change.actions != ["no-op"]) |
+              {a: (.change.actions | join(" and ")), r: .address}] as $c
+            | ($c | group_by(.a) | map("\(length) to \(.[0].a)") | join(", ")) as $counts
+            | "### Terraform plan, \(env.REGION)\n",
+              (if ($c | length) == 0 then "No changes." else
+                "**\($counts)**\n\n<details><summary>Resources</summary>\n\n```text",
+                ($c[] | "\(.a): \(.r)"),
+                "```\n</details>" end),
+              "\nAgainst the state in S3, with HAPI and the GPU at 0, as for a first apply."
+          ' plan.json > summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on the pull request
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const body = "<!-- terraform-plan -->\n" + require("fs").readFileSync("summary.md", "utf8");
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const previous = comments.find(c => c.body.startsWith("<!-- terraform-plan -->"));
+            if (previous) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }

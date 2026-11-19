@@ -14,11 +14,14 @@ SOURCE  ?= synthea/output/fhir
 ONLY    ?=
 # Name of the S3 folder a batch is uploaded to on AWS; a new name keeps earlier batches.
 RUN     ?= run-1
+# Where make aws-reserve-gpu looks for a GPU, in order (empty: the script's defaults, EU first).
+REGIONS ?=
+TYPES   ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help models up down generate load index health patients ask summary audit eval test ui \
         aws-init aws-plan aws-apply aws-import aws-push aws-kubeconfig aws-deploy aws-data aws-index aws-eval \
-        aws-ui aws-status aws-gpu-off aws-destroy aws-leftovers region-guard
+        aws-ui aws-status aws-gpu-off aws-destroy aws-leftovers region-guard bootstrap-apply aws-reserve-gpu
 
 help: ## Show the available targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -140,6 +143,22 @@ aws-gpu-off: region-guard ## Stop the GPU node, the largest cost, keeping everyt
 aws-destroy: region-guard ## Delete everything this stack created
 	-$(KUBE) delete namespace clinical-ai --ignore-not-found --wait=true
 	$(TF) destroy $(AWS_VARS)
+
+aws-reserve-gpu: ## Hold a GPU before deploying (REGIONS="..." TYPES="..."); prints what to export
+	@scripts/reserve-gpu.sh "$(REGIONS)" "$(TYPES)" > .gpu.env && . ./.gpu.env && \
+	  echo "export REGION=$$region TF_VAR_gpu_capacity_reservation_id=$$id TF_VAR_gpu_capacity_reservation_az=$$az TF_VAR_gpu_instance_types='[\"$$type\"]'" && \
+	  echo "# afterwards: aws ec2 cancel-capacity-reservation --region $$region --capacity-reservation-id $$id"
+
+# ---------- CI/CD bootstrap (once per AWS account) ----------
+# OIDC=false when the account already has GitHub's identity provider (another project created it).
+OIDC ?= true
+
+bootstrap-apply: ## One-time: GitHub OIDC trust and the plan/deploy roles for the workflows
+	@# The stack's backend settings, with this root's own state key.
+	terraform -chdir=bootstrap init -input=false -backend-config=../terraform/backend.hcl \
+	  -backend-config=key=private-clinical-ai/bootstrap.tfstate
+	terraform -chdir=bootstrap apply -var create_github_oidc_provider=$(OIDC) \
+	  -var state_bucket=$$(sed -n 's/^bucket *= *"\(.*\)"/\1/p' terraform/backend.hcl)
 
 aws-leftovers: ## List anything still tagged with this project (should be empty after aws-destroy)
 	aws resourcegroupstaggingapi get-resources --region $(REGION) --tag-filters Key=Project,Values=clinical-ai \

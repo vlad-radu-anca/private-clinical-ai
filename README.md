@@ -275,6 +275,44 @@ The loader tests run it against a fake FHIR server that fails on purpose: refere
 any patient, 503, 429 and 500 responses are retried, 4xx responses are not, and no log line ever contains a
 patient name. CI also runs `terraform fmt` and `validate`, tflint, a Trivy misconfiguration scan and shellcheck.
 
+### Pipelines and AWS access
+
+| Workflow | When | AWS access |
+| --- | --- | --- |
+| `ci.yml` | every push and pull request | none |
+| `plan.yml` | pull requests that touch the stack | read-only role, never takes the state lock |
+| `deploy-eval.yml` | by hand, after approval | deploy role, for one run |
+
+**Deploy, evaluate, destroy** is an ephemeral environment: Actions, then "Deploy, evaluate, destroy", then
+"Run workflow". It reserves a GPU first, trying the regions and instance types in the order given (EU first by
+default) and stopping at no cost if none is free. Then it runs the same make targets as the manual path, applies
+the evaluation suite as a quality gate (the run fails below the minimum score, 90% by default), keeps the logs as
+a downloadable artifact, and destroys the stack and cancels the reservation even when a step failed or the run was
+cancelled. About two hours and 4 to 6 USD per run. Each step has a time limit, so a hung step still leaves the
+destroy enough time within the role's four-hour credentials.
+
+GitHub Actions reaches AWS without stored keys: each run presents GitHub's OIDC token and gets temporary credentials
+for one role, and the roles trust only this repository. The plan comment on a pull request lists which resources
+would change and how, not their attributes, because a full plan carries account IDs in every ARN and the comments
+and logs of a public repository are public.
+
+**One-time setup**, by an administrator of the AWS account, from a laptop:
+
+```bash
+aws iam list-open-id-connect-providers     # GitHub's provider already there (another project)? then add OIDC=false
+make bootstrap-apply                       # bootstrap/: the OIDC provider and the two roles
+terraform -chdir=bootstrap output github_setup
+```
+
+Then in GitHub (or with `gh variable set`): repository variables `AWS_PLAN_ROLE_ARN`, `TF_STATE_BUCKET`, and
+`DEPLOY_REGION` if it is not us-west-2; and an environment `aws-demo` with a required reviewer and its variable
+`AWS_DEPLOY_ROLE_ARN`, for the deploy workflow.
+
+The deploy role is an administrator, because the stack creates and destroys IAM roles, KMS keys, a VPC and a cluster.
+It is limited by who can use it instead: runs in the `aws-demo` environment of this repository, after a reviewer
+approves, for at most four hours. Narrowing it to the actions a real run uses (IAM Access Analyzer can generate that
+policy from the run's CloudTrail activity) is on the roadmap.
+
 ## Roadmap
 
 - **Phase 2 on AWS:** first deployment and evaluation on the GPU, with the results next to the laptop's

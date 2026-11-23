@@ -106,14 +106,20 @@ jobs:
       # ---------- 1. A GPU first: without one there is nothing to deploy, and nothing has been spent ----------
       - name: Reserve a GPU
         id: gpu
+        timeout-minutes: 10
         env:
           REGIONS: ${{ inputs.regions }}
           GPU_TYPES: ${{ inputs.gpu_types }}
+          # Longer than the job can run: if the runner dies before the cancel step below, the reservation
+          # still ends on its own.
+          RESERVE_HOURS: "5"
         run: |
           scripts/reserve-gpu.sh "$REGIONS" "$GPU_TYPES" > gpu.env
-          cat gpu.env >> "$GITHUB_OUTPUT"
           # shellcheck disable=SC1091
           . ./gpu.env
+          # The reservation ID names a resource in the account: keep it out of the public logs, like the account ID.
+          echo "::add-mask::$id"
+          cat gpu.env >> "$GITHUB_OUTPUT"
           {
             echo "REGION=$region"
             echo "TF_VAR_gpu_capacity_reservation_id=$id"
@@ -172,6 +178,7 @@ jobs:
 
       # ---------- 4. Evidence and teardown, whatever happened above ----------
       - name: Collect evidence
+        timeout-minutes: 10
         if: always() && steps.gpu.outputs.id != ''
         run: |
           mkdir -p evidence
@@ -181,6 +188,9 @@ jobs:
           kubectl -n clinical-ai logs deploy/vllm -c vllm 2>/dev/null \
             | grep -E 'version|Model loading took|GPU KV cache|Graph capturing|startup complete|throughput' > evidence/vllm.log || true
           kubectl -n clinical-ai get events --sort-by=.lastTimestamp > evidence/events.txt 2>&1 || true
+          # GitHub masks the account ID in logs, not in artifacts (image names carry it): replace it here.
+          account=$(aws sts get-caller-identity --query Account --output text)
+          sed -i "s/${account}/<account>/g" evidence/* || true
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.gpu.outputs.id != ''
@@ -198,6 +208,7 @@ jobs:
           make aws-destroy || { sleep 60; make aws-destroy; }
 
       - name: Cancel the GPU reservation
+        timeout-minutes: 5
         if: always() && steps.gpu.outputs.id != ''
         env:
           GPU_REGION: ${{ steps.gpu.outputs.region }}
@@ -208,6 +219,7 @@ jobs:
             --query 'CapacityReservations[0].State' --output text
 
       - name: Check for leftovers
+        timeout-minutes: 5
         if: always() && steps.gpu.outputs.id != ''
         env:
           GPU_REGION: ${{ steps.gpu.outputs.region }}
@@ -218,8 +230,11 @@ jobs:
             --query 'length(Reservations[].Instances[])' --output text)
           clusters=$(aws eks list-clusters --region "$GPU_REGION" --query 'length(clusters)' --output text)
           databases=$(aws rds describe-db-instances --region "$GPU_REGION" --query 'length(DBInstances)' --output text)
-          echo "instances=$running eks_clusters=$clusters databases=$databases"
-          if [[ "$running" != 0 || "$clusters" != 0 || "$databases" != 0 ]]; then
+          reservations=$(aws ec2 describe-capacity-reservations --region "$GPU_REGION" \
+            --filters Name=tag:Project,Values=clinical-ai Name=state,Values=active,pending \
+            --query 'length(CapacityReservations)' --output text)
+          echo "instances=$running eks_clusters=$clusters databases=$databases gpu_reservations=$reservations"
+          if [[ "$running" != 0 || "$clusters" != 0 || "$databases" != 0 || "$reservations" != 0 ]]; then
             echo "::error::resources left in $GPU_REGION; check and run make aws-destroy REGION=$GPU_REGION"
             exit 1
           fi

@@ -23,6 +23,15 @@ class FakeStore:
     def current(self, patient_id):
         return []
 
+    def outline(self, patient_id):
+        return [
+            {
+                "kind": "condition",
+                "date": "2024-06-01",
+                "content": "Condition: Pulmonary tuberculosis (disorder). Onset 2024-06-01. Clinical status: active.",
+            }
+        ]
+
     def search(self, patient_id, embedding, k):
         return [
             {"kind": "condition", "date": "2025-04-08", "content": "Condition: Diabetes.", "refs": ["Condition/c1"]}
@@ -96,3 +105,20 @@ def test_overlong_questions_are_rejected(client):
     response = http.post("/patients/7945/ask", headers={"X-User": "dr.a"}, json={"question": "x" * 501})
 
     assert response.status_code == 422
+
+
+def test_suggestions_come_from_the_patients_records_and_are_audited(client):
+    http, store = client
+
+    response = http.get("/patients/7945/suggestions", headers={"X-User": "dr.a"})
+
+    assert response.status_code == 200
+    assert response.json()["questions"][0] == "When was pulmonary tuberculosis diagnosed?"
+    assert store.audited == [{"user": "dr.a", "patient": "7945", "action": "suggestions", "question": None}]
+
+
+def test_suggestions_need_a_user_and_an_indexed_patient(client):
+    http, _ = client
+
+    assert http.get("/patients/7945/suggestions").status_code == 401
+    assert http.get("/patients/1/suggestions", headers={"X-User": "dr.a"}).status_code == 404

@@ -139,6 +139,18 @@ class Store:
             records += [dict(zip(("kind", "date", "content", "refs"), row, strict=True)) for row in rows]
         return records
 
+    def outline(self, patient_id: str) -> list[dict]:
+        """The patient's conditions, prescriptions, allergies and observation series, for suggested questions.
+        Text only: a few hundred short rows at most, no embeddings."""
+        rows = self.conn.execute(
+            """
+            SELECT kind, date, content FROM chunks
+            WHERE patient_id = %s AND kind = ANY(%s)
+            """,
+            (patient_id, ["condition", "medication", "allergy", "observation"]),
+        ).fetchall()
+        return [dict(zip(("kind", "date", "content"), row, strict=True)) for row in rows]
+
     def indexed_patients(self) -> int:
         return self.conn.execute("SELECT count(DISTINCT patient_id) FROM chunks").fetchone()[0]
 

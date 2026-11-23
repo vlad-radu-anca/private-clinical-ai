@@ -34,8 +34,34 @@ was not given are flagged. **Summarise history** does not search: it takes the d
 15 prescriptions, 10 allergies and 15 observation series, because "everything important" is not something a
 similarity search can find. Procedures, immunizations and notes are not in the summary.
 
+**Suggested questions.** When you pick a patient, the buttons under the question box come from that patient's own
+records (`GET /patients/<id>/suggestions`, rules in `rag/clinical_rag/suggestions.py`). A patient with tuberculosis
+gets "When was pulmonary tuberculosis diagnosed?". A patient who never had diabetes is not offered a diabetes question.
+Up to six, in this order of importance:
+
+1. the two most recent active diagnoses;
+2. the current medications, as a list;
+3. allergies, if there are any;
+4. one trend, from the first series the patient has: HbA1c, eGFR, total cholesterol, BMI, body weight;
+5. the most recent resolved illness;
+6. the newest current medicine by name (the brand if there is one, else the drug without its strength);
+7. the most recent blood pressure.
+
+Diagnoses are conditions tagged `(disorder)` in SNOMED CT, or with no tag at all, as in most hand-written data. Most
+of Synthea's `(finding)` and `(situation)` entries are social or administrative ("Full-time employment", "Medication
+review due") and are left out. A patient without diagnoses gets "Which conditions has the patient been diagnosed
+with?". No model is involved: the suggestions appear at once and cost nothing. Reading a record is still access, so
+each request is written to the audit log (action `suggestions`).
+
+You can still type any question. Asking about something the record does not contain gives "The records do not
+contain this information", and the evaluation checks exactly that (the "absent" questions).
+
 **Limits worth knowing.**
 
+- **One patient at a time.** Every question is about the selected patient; the search filters on the patient ID in
+  SQL, so other patients' records never reach the model. "Which patients have tuberculosis?" is a question across
+  patients: a structured search such as FHIR `Condition?code=<SNOMED code>` or SQL answers it exactly, and it needs
+  its own access rules and audit. It is deliberately not part of this assistant.
 - A series keeps the 12 most recent values; the record says how many earlier ones were left out.
 - "Active" comes from the FHIR status codes: `Condition.clinicalStatus` = `active` (without an end date) and
   `MedicationRequest.status` = `active`. Data that never sets these looks historical to the assistant.
@@ -141,6 +167,7 @@ Everything happens in `rag/clinical_rag/documents.py`, which turns resources int
 3. Add a test in `rag/tests/test_documents.py` with a small hand-written resource and the exact text you expect.
 4. If the new kind has a notion of "current" (an open care plan, for example), add it to `Store.current` with its own
    limit, and tell the model in `SYSTEM_PROMPT` how to read it.
+   If it deserves a suggested question, add the kind to `Store.outline` and a rule to `suggestions.py`.
 5. Rebuild the RAG image and re-index: `make up` and `make index` locally; `make aws-push`, `make aws-deploy` and
    `make aws-index` on AWS.
 6. Add questions for it to `clinical_rag/evals.py`, with the expected answer computed from the FHIR data, so

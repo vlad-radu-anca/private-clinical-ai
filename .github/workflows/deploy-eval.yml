@@ -115,9 +115,11 @@ jobs:
           RESERVE_HOURS: "5"
         run: |
           scripts/reserve-gpu.sh "$REGIONS" "$GPU_TYPES" > gpu.env
-          cat gpu.env >> "$GITHUB_OUTPUT"
           # shellcheck disable=SC1091
           . ./gpu.env
+          # The reservation ID names a resource in the account: keep it out of the public logs, like the account ID.
+          echo "::add-mask::$id"
+          cat gpu.env >> "$GITHUB_OUTPUT"
           {
             echo "REGION=$region"
             echo "TF_VAR_gpu_capacity_reservation_id=$id"

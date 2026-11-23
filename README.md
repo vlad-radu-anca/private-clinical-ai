@@ -304,9 +304,14 @@ make bootstrap-apply                       # bootstrap/: the OIDC provider and t
 terraform -chdir=bootstrap output github_setup
 ```
 
-Then in GitHub (or with `gh variable set`): repository variables `AWS_PLAN_ROLE_ARN`, `TF_STATE_BUCKET`, and
-`DEPLOY_REGION` if it is not us-west-2; and an environment `aws-demo` with a required reviewer and its variable
-`AWS_DEPLOY_ROLE_ARN`, for the deploy workflow.
+Then in GitHub: repository secrets `AWS_PLAN_ROLE_ARN` and `TF_STATE_BUCKET`, and an environment `aws-demo` with
+the secret `AWS_DEPLOY_ROLE_ARN` (`gh secret set NAME` and `gh secret set NAME --env aws-demo`). None of these is a
+credential, since only GitHub's token for this repository can assume the roles, but they name the account and the
+bucket, and secrets are masked in the public logs where variables are not.
+
+The deploy workflow has three gates before anything is created: only people with write access can start it, the
+person starting it has to type `deploy`, and the `aws-demo` environment can require a reviewer's approval (GitHub
+offers required reviewers for public repositories, and for private ones on paid plans).
 
 The deploy role is an administrator, because the stack creates and destroys IAM roles, KMS keys, a VPC and a cluster.
 It is limited by who can use it instead: runs in the `aws-demo` environment of this repository, after a reviewer

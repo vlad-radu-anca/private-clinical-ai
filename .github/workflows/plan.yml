@@ -41,7 +41,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ env.REGION }}
           mask-aws-account-id: true
 
@@ -51,9 +51,11 @@ jobs:
           terraform_wrapper: false
 
       - name: Configure the state backend
+        env:
+          STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
         run: |
           cat > terraform/backend.hcl <<EOF
-          bucket       = "${{ vars.TF_STATE_BUCKET }}"
+          bucket       = "${STATE_BUCKET}"
           key          = "private-clinical-ai/terraform.tfstate"
           region       = "${{ vars.TF_STATE_REGION || 'us-west-2' }}"
           encrypt      = true

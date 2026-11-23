@@ -6,11 +6,18 @@ name: Deploy, evaluate, destroy
 #
 # It runs the same make targets as a laptop (README "Deploy, test, destroy"), so the two paths cannot
 # drift apart. AWS access is the deploy role (bootstrap/), assumed through GitHub's OIDC token, and only
-# from the aws-demo environment, which should require a reviewer's approval.
+# from the aws-demo environment.
+#
+# Three gates before anything is created: only people with write access can start it; the person starting
+# it must type "deploy"; and the aws-demo environment can require a reviewer's approval (GitHub offers
+# that for public repositories, and for private ones on paid plans).
 
 on:
   workflow_dispatch:
     inputs:
+      confirm:
+        description: Type "deploy" to create billable AWS resources (GPU included) for about two hours
+        required: true
       regions:
         description: Regions to look for a GPU in, in order of preference (each needs G-instance quota)
         default: eu-west-1 eu-central-1 us-west-2
@@ -38,8 +45,24 @@ env:
   TF_IN_AUTOMATION: "1"
 
 jobs:
+  # Runs without the environment, so a run that was not confirmed never reaches the approval, the
+  # environment's secrets or AWS.
+  confirm:
+    name: confirm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [[ "$CONFIRM" != deploy ]]; then
+            echo "::error::not confirmed: type deploy in the confirm field to start a deploy"
+            exit 1
+          fi
+
   deploy-eval:
     name: deploy, evaluate, destroy
+    needs: confirm
     runs-on: ubuntu-latest
     environment: aws-demo
     # Each step has its own limit, so a hung step fails early and the destroy below always runs inside the
@@ -52,7 +75,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-west-2 # where API calls go by default; every step names its region
           role-duration-seconds: 14400 # the role's maximum: credentials must outlive the destroy
           mask-aws-account-id: true
@@ -68,9 +91,11 @@ jobs:
           java-version: "21"
 
       - name: Configure the state backend
+        env:
+          STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
         run: |
           cat > terraform/backend.hcl <<EOF
-          bucket       = "${{ vars.TF_STATE_BUCKET }}"
+          bucket       = "${STATE_BUCKET}"
           key          = "private-clinical-ai/terraform.tfstate"
           region       = "${{ vars.TF_STATE_REGION || 'us-west-2' }}"
           encrypt      = true

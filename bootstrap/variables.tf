@@ -5,9 +5,25 @@ variable "region" {
 }
 
 variable "github_repository" {
-  description = "The repository allowed to assume the roles, as owner/name."
+  description = "The repository, as owner/name, for the roles' descriptions. Access is decided by github_subject_prefix."
   type        = string
   default     = "vlad-radu-anca/private-clinical-ai"
+}
+
+variable "github_subject_prefix" {
+  description = <<-EOT
+    Start of the "sub" claim in GitHub's OIDC tokens for the repository. GitHub writes it with the owner's and
+    the repository's numeric IDs ("immutable subject"), which survive renames and cannot be taken over by a new
+    repository of the same name. Read it with:
+      gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+  EOT
+  type        = string
+  default     = "repo:vlad-radu-anca@87801278/private-clinical-ai@1457026145"
+
+  validation {
+    condition     = can(regex("^repo:[^/]+@[0-9]+/[^/]+@[0-9]+$", var.github_subject_prefix))
+    error_message = "Expected repo:OWNER@OWNER_ID/REPO@REPO_ID, the immutable form GitHub sends."
+  }
 }
 
 variable "deploy_environment" {

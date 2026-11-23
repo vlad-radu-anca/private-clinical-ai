@@ -292,7 +292,9 @@ cancelled. About two hours and 4 to 6 USD per run. Each step has a time limit, s
 destroy enough time within the role's four-hour credentials.
 
 GitHub Actions reaches AWS without stored keys: each run presents GitHub's OIDC token and gets temporary credentials
-for one role, and the roles trust only this repository. The plan comment on a pull request lists which resources
+for one role, and the roles trust only this repository, identified by its numeric owner and repository IDs rather than
+its name (GitHub's immutable subject claim), so a renamed repository keeps access and a new repository reusing the
+name gets none. The plan comment on a pull request lists which resources
 would change and how, not their attributes, because a full plan carries account IDs in every ARN and the comments
 and logs of a public repository are public.
 

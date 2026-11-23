@@ -25,8 +25,8 @@ data "aws_iam_openid_connect_provider" "github" {
 # Trust: GitHub's token for this repository, in a given context ("sub"), meant for AWS ("aud").
 data "aws_iam_policy_document" "trust" {
   for_each = {
-    plan   = "repo:${var.github_repository}:pull_request"
-    deploy = "repo:${var.github_repository}:environment:${var.deploy_environment}"
+    plan   = "${var.github_subject_prefix}:pull_request"
+    deploy = "${var.github_subject_prefix}:environment:${var.deploy_environment}"
   }
 
   statement {

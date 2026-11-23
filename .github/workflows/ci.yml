@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  TF_VERSION: "1.10.5"
+  TF_VERSION: "1.16.4" # same as the workflows that read the state
 
 jobs:
   python:
@@ -36,8 +36,12 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
       - run: terraform fmt -check -recursive
-      - run: terraform -chdir=terraform init -backend=false -input=false
-      - run: terraform -chdir=terraform validate -no-color
+      - name: Validate the stack and the CI bootstrap
+        run: |
+          for root in terraform bootstrap; do
+            terraform -chdir=$root init -backend=false -input=false -no-color >/dev/null
+            terraform -chdir=$root validate -no-color
+          done
 
   tflint:
     name: tflint

@@ -25,3 +25,4 @@ failed_bundles.txt
 
 # Generated Kubernetes overlays (account-specific)
 k8s/build/
+.gpu.env

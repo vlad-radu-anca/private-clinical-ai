@@ -89,6 +89,7 @@ clinician ──▶ RAG API ──▶ that patient's records only ──▶ qwen
 | The most similar records come first | With the current facts listed first, the 8B model missed a diagnosis that was in its context. Reordering fixed it. |
 | Citations are checked | Each `[n]` is mapped back to its FHIR resources. A citation to a record the model was never given is reported, not dropped: it means an invented source. |
 | One client for Ollama and vLLM | Both serve the OpenAI API, so the laptop and AWS differ only in a base URL, and in how Qwen3's thinking mode is switched off (`reasoning_effort` in Ollama, `chat_template_kwargs` in vLLM). |
+| Suggested questions come from the patient's own record | A fixed list offered "When was diabetes diagnosed?" for patients who never had diabetes. Rules over the indexed records now suggest up to six questions about that patient's own diagnoses, medicines, allergies and measurements, with no model call. Synthea's social findings ("Full-time employment") are not treated as diagnoses. |
 | The audit log stores a hash of the question, not the text | Questions name diagnoses. An audit trail has to be safe to read. |
 | `qwen3:8b` and `qwen3-embedding:0.6b` | Apache-2.0, and the same weights fit the AWS GPU (an NVIDIA L4, 24 GB), so local evaluations predict the deployed behaviour. |
 
@@ -148,6 +149,8 @@ make index        # patients into pgvector, about 20 minutes
 
 Open http://localhost:8000/ (`make ui`), pick a patient on the left, and ask a question or click
 **Summarise history**. Patient IDs are assigned by HAPI when the data is loaded, so they differ between setups.
+The buttons under the question box are suggestions built from the selected patient's own record: their diagnoses,
+current medicines, allergies and the most telling measurement series.
 
 - Click a blue **[n]** in an answer to jump to its source, then the **FHIR records** link to open the record
   in HAPI and check the answer against the data.
@@ -169,8 +172,10 @@ The API's interactive documentation is at http://localhost:8000/docs, and HAPI's
 http://localhost:8080/.
 
 **Your own data.** [docs/working-with-data.md](docs/working-with-data.md) lists which parts of a FHIR record the
-assistant can answer about, shows how to add more Synthea patients or a patient written by hand
-([an example bundle](docs/examples/handmade-patient.json)), and how to teach it a new kind of record.
+assistant can answer about and how the suggested questions are chosen, shows how to add more Synthea patients or a
+patient written by hand ([an example bundle](docs/examples/handmade-patient.json)), and how to teach it a new kind of
+record. Questions are always about one patient; "which patients have tuberculosis?" is a search across patients and
+deliberately not part of this assistant (the guide explains why and what would answer it).
 
 ### Stop and clean up
 
@@ -194,6 +199,11 @@ under 7 minutes, answers in 1 to 3 seconds, **136/141 (96%)** on the evaluation 
 laptop. The first real deploy also found nine problems that local runs and CI could not, from GPU capacity to a
 Kubernetes environment variable that stopped vLLM; each is fixed in code. Transcript, raw logs and the list:
 [docs/demo/aws-2026-11-19.md](docs/demo/aws-2026-11-19.md).
+
+**Then from the pipeline alone, on 23 November 2026:** one run of the `deploy-eval.yml` workflow reserved an NVIDIA
+L4 (g6.xlarge in us-west-2d, after the EU regions had none), built the stack, generated and indexed 110 new synthetic
+patients, scored **132/136 (97%)**, destroyed all 108 resources and cancelled the reservation, in 1 hour 40 minutes
+with no step done by hand.
 
 | Decision | Why |
 | --- | --- |
@@ -267,8 +277,8 @@ pip install -r requirements-dev.txt
 ruff check . && pytest
 ```
 
-The RAG tests cover chunking, citation checking, patient scoping and the API (user required, inputs
-validated, every answer audited), with fakes in place of the database and the model, so they run in CI
+The RAG tests cover chunking, citation checking, patient scoping, the suggested questions (built from the patient's
+own records, social findings left out) and the API (user required, inputs validated, every answer audited), with fakes in place of the database and the model, so they run in CI
 without a GPU. The evaluation suite (`make eval`) runs the real model and is the check for answer quality.
 
 The loader tests run it against a fake FHIR server that fails on purpose: reference bundles must load before
@@ -289,7 +299,10 @@ default) and stopping at no cost if none is free. Then it runs the same make tar
 the evaluation suite as a quality gate (the run fails below the minimum score, 90% by default), keeps the logs as
 a downloadable artifact, and destroys the stack and cancels the reservation even when a step failed or the run was
 cancelled. About two hours and 4 to 6 USD per run. Each step has a time limit, so a hung step still leaves the
-destroy enough time within the role's four-hour credentials.
+destroy enough time within the role's four-hour credentials. The GPU reservation also expires on its own after five
+hours, in case the runner itself is lost before the cleanup; the last step fails the run if any instance, cluster,
+database or reservation is left; and the account ID is replaced in the evidence files, since GitHub masks it in logs
+but not in artifacts.
 
 GitHub Actions reaches AWS without stored keys: each run presents GitHub's OIDC token and gets temporary credentials
 for one role, and the roles trust only this repository, identified by its numeric owner and repository IDs rather than
@@ -322,11 +335,13 @@ policy from the run's CloudTrail activity) is on the roadmap.
 
 ## Roadmap
 
-- **Phase 2 on AWS:** first deployment and evaluation on the GPU, with the results next to the laptop's
 - Run vLLM non-root with a read-only root filesystem, once verified on a GPU, and remove its exception
 - Keycloak in place of the trusted `X-User` header, so each clinician sees only their own patients
 - Bedrock via PrivateLink as a switchable backend + ADR comparing cost, compliance and quality
 - Compare qwen3:8b with a larger model and MedGemma on the evaluation suite, recorded as a decision record
+- A 503 with a retry hint, instead of a 500, while vLLM restarts
+- Questions across patients ("which patients have tuberculosis?") as a separate feature on FHIR search, with its own
+  access rules and audit
 - ArgoCD GitOps, Kyverno policies, Infracost in PRs
 
 ## License

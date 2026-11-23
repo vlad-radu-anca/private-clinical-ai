@@ -101,7 +101,7 @@ jobs:
           encrypt      = true
           use_lockfile = true
           EOF
-          terraform -chdir=terraform init -input=false -no-color >/dev/null
+          terraform -chdir=terraform init -input=false -no-color -backend-config=backend.hcl >/dev/null
 
       # ---------- 1. A GPU first: without one there is nothing to deploy, and nothing has been spent ----------
       - name: Reserve a GPU

@@ -20,6 +20,7 @@ from clinical_rag import answer as qa
 from clinical_rag.clients import FhirClient, ModelClient
 from clinical_rag.config import Settings
 from clinical_rag.store import Store
+from clinical_rag.suggestions import suggest
 
 PATIENT_ID = re.compile(r"[A-Za-z0-9\-.]{1,64}")
 state: dict = {}
@@ -113,6 +114,19 @@ def summary(patient_id: str, user: str = Depends(current_user)) -> dict:
     result = qa.summarise(state["store"], state["chat"], pid)
     result.latency_ms = result.latency_ms or int((time.monotonic() - started) * 1000)
     return respond(result, user, pid, "summary", None)
+
+
+@app.get("/patients/{patient_id}/suggestions")
+def suggestions(patient_id: str, user: str = Depends(current_user)) -> dict:
+    """Questions built from this patient's own records (no model involved). Reading a record's contents is
+    access to it, so this is audited like a question."""
+    pid = checked_patient(patient_id)
+    started = time.monotonic()
+    records = state["store"].outline(pid)
+    questions = suggest(records)
+    latency_ms = int((time.monotonic() - started) * 1000)
+    state["store"].audit(user, pid, "suggestions", None, len(records), latency_ms, "none (rules)")
+    return {"patient_id": pid, "questions": questions}
 
 
 @app.get("/audit")

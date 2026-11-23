@@ -111,10 +111,10 @@
 
 <script>
 const FHIR = `${location.protocol}//${location.hostname}:8080/fhir`;
-const EXAMPLES = [
-  "When was the patient diagnosed with diabetes?",
+// Shown only if the patient's own suggestions cannot be loaded: general questions that fit anyone.
+const GENERAL = [
+  "Which conditions has the patient been diagnosed with?",
   "Which medications is the patient currently taking?",
-  "How has the HbA1c changed over time?",
   "Does the patient have any allergies?",
   "What was the most recent blood pressure?",
 ];
@@ -170,6 +170,20 @@ function select(p) {
   $("result").replaceChildren();
   $("history-list").replaceChildren();
   $("history").classList.add("hidden");
+  loadSuggestions(p);
+}
+
+// Questions built from this patient's records, so they name the patient's own diagnoses and medicines.
+async function loadSuggestions(p) {
+  $("examples").replaceChildren();
+  let questions;
+  try { questions = (await api(`/patients/${p.id}/suggestions`)).questions; } catch (e) { questions = GENERAL; }
+  if (current !== p) return; // another patient was picked while this one loaded
+  $("examples").replaceChildren(...questions.map(q => {
+    const b = el("button", {}, q);
+    b.onclick = () => { $("question").value = q; run("ask"); };
+    return b;
+  }));
 }
 
 function renderAnswer(label, data) {
@@ -234,7 +248,6 @@ document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
   $("tab-audit").classList.toggle("hidden", b.dataset.tab !== "audit");
   if (b.dataset.tab === "audit") loadAudit();
 });
-$("examples").replaceChildren(...EXAMPLES.map(q => { const b = el("button", {}, q); b.onclick = () => { $("question").value = q; run("ask"); }; return b; }));
 $("ask-btn").onclick = () => run("ask");
 $("summary-btn").onclick = () => run("summary");
 $("question").addEventListener("keydown", e => { if (e.key === "Enter") run("ask"); });

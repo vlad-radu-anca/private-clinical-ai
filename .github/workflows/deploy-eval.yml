@@ -186,6 +186,9 @@ jobs:
           kubectl -n clinical-ai logs deploy/vllm -c vllm 2>/dev/null \
             | grep -E 'version|Model loading took|GPU KV cache|Graph capturing|startup complete|throughput' > evidence/vllm.log || true
           kubectl -n clinical-ai get events --sort-by=.lastTimestamp > evidence/events.txt 2>&1 || true
+          # GitHub masks the account ID in logs, not in artifacts (image names carry it): replace it here.
+          account=$(aws sts get-caller-identity --query Account --output text)
+          sed -i "s/${account}/<account>/g" evidence/* || true
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.gpu.outputs.id != ''
